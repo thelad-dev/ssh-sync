@@ -232,12 +232,23 @@ async function refreshAll() {
 
 function renderInstallHints() {
   const base = window.location.origin;
-  document.getElementById('install-linux').textContent = `curl -fsSL ${base}/install/linux.sh | sh`;
-  document.getElementById('install-windows').textContent = `irm ${base}/install/windows.ps1 | iex`;
+  document.getElementById('install-linux').textContent =
+    `# cosign erforderlich (Sigstore). Skript speichern, lesen, dann ausfuehren - kein curl|sh
+curl -fsSL ${base}/install/linux.sh -o install-linux.sh
+less install-linux.sh
+sh install-linux.sh
+# ohne cosign (keine Herkunft): sh install-linux.sh --unsicher-nur-pruefsumme`;
+  document.getElementById('install-windows').textContent =
+    `# cosign erforderlich. Skript speichern, lesen, dann ausfuehren - kein irm|iex
+Invoke-WebRequest -Uri ${base}/install/windows.ps1 -OutFile install-windows.ps1
+notepad install-windows.ps1
+powershell -File install-windows.ps1
+# ohne cosign: powershell -File install-windows.ps1 -UnsicherNurPruefsumme`;
   document.getElementById('install-post').textContent =
-    `# Nach Install: Gerät hier anlegen → Config + Befehle kopieren
-# Linux: ~/.config/ssh-sync/config.json → ssh-sync unlock → systemctl --user enable --now ssh-sync
-# Windows: %USERPROFILE%\\.config\\ssh-sync\\config.json → ssh-sync.exe unlock → Dienst starten`;
+    `# Nach Install: Geraet hier anlegen -> Config + Befehle kopieren
+# Binary kommt vom GitHub-Release; Installer prueft manifest.json per cosign
+# Linux: ~/.config/ssh-sync/config.json -> ssh-sync unlock -> systemctl --user enable --now ssh-sync
+# Windows: %USERPROFILE%\\.config\\ssh-sync\\config.json -> ssh-sync.exe unlock -> Dienst starten`;
 }
 
 function renderIdentities() {

@@ -16,9 +16,9 @@ Ausser Scope: Kompromittierung des Betreiber-Hosts, physischer Zugriff, schwache
 
 ## Release-Verifikation
 
-- Agent-Binaries nur mit gültiger Ed25519-Signatur über `downloads/manifest.json` akzeptieren.
-- Public-Key-Fingerabdruck aus dem Release-Hinweis mit dem eingebetteten Key vergleichen (`docs/release-signing.md`).
-- Keine `curl | sh` / `irm | iex`-Einzeiler aus Drittquellen.
+- Agent-Binaries nur mit gültiger Sigstore-Verifikation über `manifest.json` + `manifest.json.sigstore.json` akzeptieren (GitHub-Actions-Identität; siehe `docs/release-signing.md`).
+- Installer: `cosign verify-blob` oder explizit `--unsicher-nur-pruefsumme` (nur SHA-256, keine Herkunft).
+- Keine `curl | sh` / `irm | iex`-Einzeiler.
 
 ## Bekannte Grenzen (kurz)
 

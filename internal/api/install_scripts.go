@@ -10,6 +10,10 @@ import (
 	"github.com/thelad-dev/ssh-sync/internal/releaseverify"
 )
 
+// Standard-Release-Basis (GitHub latest). Identitaets-Strings fuer cosign stehen
+// nur in den generierten Skripten und kanonisch in internal/releaseverify/identity.go.
+const defaultReleaseBase = "https://github.com/thelad-dev/ssh-sync/releases/latest/download"
+
 func InstallScriptsHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -74,48 +78,89 @@ func linuxInstallScript(base string) string {
 	return LinuxInstallScript(base)
 }
 
-// LinuxInstallScript liefert den generierten Linux-Installer (POSIX sh).
+// LinuxInstallScript liefert den generierten POSIX-Installer (Linux und macOS).
 func LinuxInstallScript(base string) string {
-	pemBlock, pemErr := releaseverify.PublicKeyPEM()
-	pemContent := ""
-	if pemErr == nil {
-		pemContent = pemBlock
-	}
 	return fmt.Sprintf(`#!/bin/sh
-# ssh-sync  -  Linux Installer
-# Empfohlen: Skript laden, lesen, Pruefsumme vergleichen, dann ausfuehren.
+# ssh-sync  -  Linux/macOS Installer
+# Empfohlen: Skript laden, lesen, dann ausfuehren. Nicht: curl | sh
 #   curl -fsSL '%s/install/linux.sh' -o install-linux.sh
 #   less install-linux.sh
 #   sh install-linux.sh
-# Nicht empfohlen: curl | sh
+# Optional ohne cosign (KEINE Herkunftspruefung):
+#   sh install-linux.sh --unsicher-nur-pruefsumme
 set -eu
 
-BASE_URL="${SSH_SYNC_URL:-%s}"
+PORTAL_URL="${SSH_SYNC_URL:-%s}"
+RELEASE_BASE="${SSH_SYNC_RELEASE_URL:-%s}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 SERVICE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 BIN_NAME="ssh-sync"
 ALLOW_INSECURE="${SSH_SYNC_ALLOW_INSECURE:-0}"
+UNSICHER_NUR_PRUEFSUMME=0
+# Identitaet: kanonisch internal/releaseverify/identity.go
+COSIGN_OIDC_ISSUER="https://token.actions.githubusercontent.com"
+COSIGN_IDENTITY_REGEXP='^https://github\.com/thelad-dev/ssh-sync/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+GITHUB_REPO="https://github.com/thelad-dev/ssh-sync"
 
-case "$BASE_URL" in
-  https://*) ;;
-  http://127.0.0.1:*|http://127.0.0.1|http://localhost:*|http://localhost) ;;
-  http://*)
-    if [ "$ALLOW_INSECURE" != "1" ]; then
-      echo "http:// nur mit SSH_SYNC_ALLOW_INSECURE=1 oder gegen Loopback." >&2
+for arg in "$@"; do
+  case "$arg" in
+    --unsicher-nur-pruefsumme) UNSICHER_NUR_PRUEFSUMME=1 ;;
+    -h|--help)
+      echo "Usage: sh install-linux.sh [--unsicher-nur-pruefsumme]"
+      echo "  Standard: cosign verify-blob gegen Sigstore (GitHub Actions Identitaet)."
+      echo "  --unsicher-nur-pruefsumme: nur SHA-256 gegen SHA256SUMS (keine Herkunft)."
+      exit 0
+      ;;
+    *)
+      echo "Unbekanntes Argument: $arg (siehe --help)" >&2
       exit 1
-    fi
+      ;;
+  esac
+done
+
+require_https_or_loopback() {
+  url="$1"
+  label="$2"
+  case "$url" in
+    https://*) ;;
+    http://127.0.0.1:*|http://127.0.0.1|http://localhost:*|http://localhost) ;;
+    http://*)
+      if [ "$ALLOW_INSECURE" != "1" ]; then
+        echo "$label: http:// nur mit SSH_SYNC_ALLOW_INSECURE=1 oder gegen Loopback." >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "$label muss https:// (oder Loopback-http) sein: $url" >&2
+      exit 1
+      ;;
+  esac
+}
+
+require_https_or_loopback "$PORTAL_URL" "PORTAL_URL / SSH_SYNC_URL"
+require_https_or_loopback "$RELEASE_BASE" "RELEASE_BASE / SSH_SYNC_RELEASE_URL"
+
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+arch="$(uname -m)"
+case "$os" in
+  linux)
+    case "$arch" in
+      x86_64|amd64)  ASSET="ssh-sync-linux-amd64" ;;
+      aarch64|arm64) ASSET="ssh-sync-linux-arm64" ;;
+      *) echo "Nicht unterstuetzte Architektur: $arch" >&2; exit 1 ;;
+    esac
+    ;;
+  darwin)
+    case "$arch" in
+      x86_64|amd64)  ASSET="ssh-sync-darwin-amd64" ;;
+      arm64|aarch64) ASSET="ssh-sync-darwin-arm64" ;;
+      *) echo "Nicht unterstuetzte Architektur: $arch" >&2; exit 1 ;;
+    esac
     ;;
   *)
-    echo "BASE_URL muss https:// (oder Loopback-http) sein: $BASE_URL" >&2
+    echo "Nicht unterstuetztes OS: $os (Linux/macOS)" >&2
     exit 1
     ;;
-esac
-
-arch="$(uname -m)"
-case "$arch" in
-  x86_64|amd64)  ASSET="ssh-sync-linux-amd64" ;;
-  aarch64|arm64) ASSET="ssh-sync-linux-arm64" ;;
-  *) echo "Nicht unterstuetzte Architektur: $arch" >&2; exit 1 ;;
 esac
 
 mkdir -p "$INSTALL_DIR"
@@ -127,14 +172,19 @@ if ! touch "$INSTALL_DIR/.write-test" 2>/dev/null; then
 fi
 rm -f "$INSTALL_DIR/.write-test"
 
-if ! command -v sha256sum >/dev/null 2>&1; then
-  echo "sha256sum erforderlich" >&2
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+  echo "sha256sum oder shasum erforderlich" >&2
   exit 1
 fi
-if ! command -v openssl >/dev/null 2>&1; then
-  echo "openssl erforderlich (Ed25519-Signaturpruefung)" >&2
-  exit 1
-fi
+
+file_sha256() {
+  f="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$f" | awk '{print tolower($1)}'
+  else
+    shasum -a 256 "$f" | awk '{print tolower($1)}'
+  fi
+}
 
 curl_fetch() {
   url="$1"
@@ -158,44 +208,110 @@ curl_fetch() {
   fi
 }
 
+hash_from_manifest() {
+  # Unterstuetzt {"assets":{"name":"hex"}} und {"assets":[{"filename":"name","sha256":"hex"},...]}
+  asset="$1"
+  man="$2"
+  h="$(sed -n "s/.*\"${asset}\"[[:space:]]*:[[:space:]]*\"\\([0-9a-fA-F]\\{64\\}\\)\".*/\\1/p" "$man" | tr 'A-F' 'a-f' | head -n1)"
+  if [ -n "$h" ]; then
+    printf '%%s' "$h"
+    return 0
+  fi
+  h="$(awk -v a="$asset" '
+    BEGIN { IGNORECASE=0 }
+    {
+      line=$0
+      if (index(line, a) == 0) next
+      if (match(line, /"sha256"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]{64}"/)) {
+        s = substr(line, RSTART, RLENGTH)
+        sub(/^.*"sha256"[[:space:]]*:[[:space:]]*"/, "", s)
+        sub(/".*$/, "", s)
+        print tolower(s)
+        exit
+      }
+    }
+  ' "$man")"
+  printf '%%s' "$h"
+}
+
+hash_from_sums() {
+  asset="$1"
+  sums="$2"
+  awk -v a="$asset" 'tolower($2)==tolower(a) || $2==("./" a) { print tolower($1); exit }' "$sums"
+}
+
+print_cosign_install_help() {
+  echo "" >&2
+  echo "cosign fehlt. Herkunftspruefung (Sigstore) braucht cosign." >&2
+  echo "Installation (Beispiele):" >&2
+  echo "  Linux:  https://docs.sigstore.dev/cosign/system_config/installation/" >&2
+  echo "          oder: go install github.com/sigstore/cosign/v2/cmd/cosign@latest" >&2
+  echo "  macOS:  brew install cosign" >&2
+  echo "" >&2
+  echo "Manuelle Pruefung nach Download von Release-Artefakten:" >&2
+  echo "  cosign verify-blob \\" >&2
+  echo "    --bundle manifest.json.sigstore.json \\" >&2
+  echo "    --certificate-identity-regexp '$COSIGN_IDENTITY_REGEXP' \\" >&2
+  echo "    --certificate-oidc-issuer $COSIGN_OIDC_ISSUER \\" >&2
+  echo "    manifest.json" >&2
+  echo "" >&2
+  echo "Ohne cosign nur mit explizitem Schalter (KEINE Herkunftspruefung):" >&2
+  echo "  sh install-linux.sh --unsicher-nur-pruefsumme" >&2
+}
+
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/ssh-sync-install.XXXXXX")"
 trap 'rm -rf "$WORKDIR"' EXIT
 
-PUB_PEM="$WORKDIR/release.pub"
 MANIFEST="$WORKDIR/manifest.json"
-SIG="$WORKDIR/manifest.sig"
+BUNDLE="$WORKDIR/manifest.json.sigstore.json"
+SUMS="$WORKDIR/SHA256SUMS"
 BIN="$WORKDIR/$ASSET"
-cat >"$PUB_PEM" <<'SSHPUB'
-%s
-SSHPUB
 
-if ! grep -q "BEGIN PUBLIC KEY" "$PUB_PEM"; then
-  echo "Kein Release-Public-Key im Installer eingebettet. Siehe docs/release-signing.md" >&2
-  exit 1
-fi
+echo "-> Lade Release-Artefakte von $RELEASE_BASE"
+curl_fetch "$RELEASE_BASE/manifest.json" "$MANIFEST"
+curl_fetch "$RELEASE_BASE/manifest.json.sigstore.json" "$BUNDLE"
+curl_fetch "$RELEASE_BASE/SHA256SUMS" "$SUMS"
+curl_fetch "$RELEASE_BASE/$ASSET" "$BIN"
 
-echo "-> Lade Manifest und Binary von $BASE_URL"
-curl_fetch "$BASE_URL/downloads/manifest.json" "$MANIFEST"
-curl_fetch "$BASE_URL/downloads/manifest.sig" "$SIG"
-curl_fetch "$BASE_URL/downloads/$ASSET" "$BIN"
-
-# Signatur ueber kanonisches Manifest: der Agent signiert CanonicalJSON.
-# openssl prueft die Rohbytes der heruntergeladenen Datei nicht gegen CanonicalJSON.
-# Deshalb normalisieren wir mit einem kleinen Hinweis: Signaturdatei gilt fuer
-# die exakten Bytes von manifest.json wie veroeffentlicht (CanonicalJSON).
-if ! openssl pkeyutl -verify -pubin -inkey "$PUB_PEM" -rawin -in "$MANIFEST" -sigfile "$SIG" >/dev/null 2>&1; then
-  echo "Manifest-Signatur ungueltig" >&2
-  exit 1
-fi
-
-WANT_HASH="$(sed -n "s/.*\"${ASSET}\":\"\\([0-9a-fA-F]\\{64\\}\\)\".*/\\1/p" "$MANIFEST" | tr 'A-F' 'a-f' | head -n1)"
-if [ -z "$WANT_HASH" ]; then
-  echo "Hash fuer $ASSET fehlt im Manifest" >&2
-  exit 1
-fi
-GOT_HASH="$(sha256sum "$BIN" | awk '{print tolower($1)}')"
-if [ "$GOT_HASH" != "$WANT_HASH" ]; then
-  echo "SHA-256 stimmt nicht (got $GOT_HASH want $WANT_HASH)" >&2
+if command -v cosign >/dev/null 2>&1; then
+  echo "-> Pruefe Sigstore-Bundle mit cosign (GitHub Actions Identitaet)"
+  if ! cosign verify-blob \
+    --bundle "$BUNDLE" \
+    --certificate-identity-regexp "$COSIGN_IDENTITY_REGEXP" \
+    --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" \
+    "$MANIFEST"; then
+    echo "Sigstore-Verifikation fehlgeschlagen" >&2
+    exit 1
+  fi
+  WANT_HASH="$(hash_from_manifest "$ASSET" "$MANIFEST")"
+  if [ -z "$WANT_HASH" ]; then
+    WANT_HASH="$(hash_from_sums "$ASSET" "$SUMS")"
+  fi
+  if [ -z "$WANT_HASH" ]; then
+    echo "Hash fuer $ASSET fehlt in Manifest und SHA256SUMS" >&2
+    exit 1
+  fi
+  GOT_HASH="$(file_sha256 "$BIN")"
+  if [ "$GOT_HASH" != "$WANT_HASH" ]; then
+    echo "SHA-256 stimmt nicht (got $GOT_HASH want $WANT_HASH)" >&2
+    exit 1
+  fi
+elif [ "$UNSICHER_NUR_PRUEFSUMME" = "1" ]; then
+  echo "WARNUNG: cosign fehlt. Nur SHA-256 gegen SHA256SUMS aus demselben Release." >&2
+  echo "WARNUNG: Keine Herkunftspruefung (Sigstore/GitHub-Identitaet). Nur mit --unsicher-nur-pruefsumme." >&2
+  echo "Repo-Referenz: $GITHUB_REPO" >&2
+  WANT_HASH="$(hash_from_sums "$ASSET" "$SUMS")"
+  if [ -z "$WANT_HASH" ]; then
+    echo "Hash fuer $ASSET fehlt in SHA256SUMS" >&2
+    exit 1
+  fi
+  GOT_HASH="$(file_sha256 "$BIN")"
+  if [ "$GOT_HASH" != "$WANT_HASH" ]; then
+    echo "SHA-256 stimmt nicht (got $GOT_HASH want $WANT_HASH)" >&2
+    exit 1
+  fi
+else
+  print_cosign_install_help
   exit 1
 fi
 
@@ -223,7 +339,7 @@ systemd_user() {
   systemctl --user "$@" 2>/dev/null
 }
 
-if command -v systemctl >/dev/null 2>&1; then
+if [ "$os" = "linux" ] && command -v systemctl >/dev/null 2>&1; then
   mkdir -p "$SERVICE_DIR"
   cat >"$SERVICE_DIR/ssh-sync.service" <<UNIT
 [Unit]
@@ -245,35 +361,56 @@ UNIT
   else
     echo "-> Hinweis: systemd user service konnte nicht aktiviert werden."
   fi
-else
+elif [ "$os" = "linux" ]; then
   echo "-> systemd nicht gefunden  -  Daemon manuell: $DEST daemon"
+else
+  echo "-> macOS: Daemon manuell starten: $DEST daemon"
 fi
 
 echo ""
 echo "Fertig. Naechste Schritte:"
-echo "  1. Im Portal: $BASE_URL -> Geraete -> Config kopieren"
+echo "  1. Im Portal: $PORTAL_URL -> Geraete -> Config kopieren"
 echo "  2. Nach ~/.config/ssh-sync/config.json"
-echo "  3. $BIN_NAME unlock && systemctl --user start ssh-sync"
+echo "  3. $BIN_NAME unlock && systemctl --user start ssh-sync   # Linux mit systemd"
 echo ""
-echo "Updates: $BIN_NAME update   (prueft Signatur und SHA-256)"
-`, base, base, pemContent)
+echo "Updates: $BIN_NAME update   (Client prueft Sigstore-Manifest)"
+`, base, base, defaultReleaseBase)
 }
 
 func windowsInstallScript(base string) string {
-	pemBlock, _ := releaseverify.PublicKeyPEM()
-	pemEscaped := strings.ReplaceAll(pemBlock, "'", "''")
 	return fmt.Sprintf(`# ssh-sync  -  Windows Installer (PowerShell)
 # Empfohlen: Skript speichern, lesen, dann ausfuehren. Nicht: irm | iex
 #   Invoke-WebRequest -Uri '%s/install/windows.ps1' -OutFile install-windows.ps1
 #   notepad install-windows.ps1
 #   powershell -File install-windows.ps1
+# Optional ohne cosign (KEINE Herkunftspruefung):
+#   powershell -File install-windows.ps1 -UnsicherNurPruefsumme
+param(
+  [switch]$UnsicherNurPruefsumme
+)
 $ErrorActionPreference = "Stop"
 %s
-$BaseUrl = if ($env:SSH_SYNC_URL) { $env:SSH_SYNC_URL } else { "%s" }
+$PortalUrl = if ($env:SSH_SYNC_URL) { $env:SSH_SYNC_URL } else { "%s" }
+$ReleaseBase = if ($env:SSH_SYNC_RELEASE_URL) { $env:SSH_SYNC_RELEASE_URL } else { "%s" }
 $AllowInsecure = $env:SSH_SYNC_ALLOW_INSECURE -eq "1"
-if ($BaseUrl -notmatch '^https://' -and $BaseUrl -notmatch '^http://(127\.0\.0\.1|localhost)(:|$)') {
-  if (-not $AllowInsecure) { throw "http:// nur mit SSH_SYNC_ALLOW_INSECURE=1 oder Loopback" }
+# Identitaet: kanonisch internal/releaseverify/identity.go
+$CosignOidcIssuer = "https://token.actions.githubusercontent.com"
+$CosignIdentityRegexp = '^https://github\.com/thelad-dev/ssh-sync/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+$GithubRepo = "https://github.com/thelad-dev/ssh-sync"
+
+function Assert-HttpsOrLoopback([string]$Url, [string]$Label) {
+  if ($Url -match '^https://') { return }
+  if ($Url -match '^http://(127\.0\.0\.1|localhost)(:|$)') { return }
+  if ($Url -match '^http://') {
+    if (-not $AllowInsecure) { throw "${Label}: http:// nur mit SSH_SYNC_ALLOW_INSECURE=1 oder Loopback" }
+    return
+  }
+  throw "$Label muss https:// (oder Loopback-http) sein: $Url"
 }
+
+Assert-HttpsOrLoopback $PortalUrl "PORTAL_URL / SSH_SYNC_URL"
+Assert-HttpsOrLoopback $ReleaseBase "RELEASE_BASE / SSH_SYNC_RELEASE_URL"
+
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\ssh-sync"
 $ZipPath = Join-Path $env:TEMP "ssh-sync-windows-amd64.zip"
 $ExePath = Join-Path $InstallDir "ssh-sync.exe"
@@ -285,35 +422,79 @@ $Headers = @{}
 if ($env:CF_ACCESS_CLIENT_ID) { $Headers["CF-Access-Client-Id"] = $env:CF_ACCESS_CLIENT_ID }
 if ($env:CF_ACCESS_CLIENT_SECRET) { $Headers["CF-Access-Client-Secret"] = $env:CF_ACCESS_CLIENT_SECRET }
 
+$Asset = "ssh-sync-windows-amd64.zip"
 $Manifest = Join-Path $Work "manifest.json"
-$Sig = Join-Path $Work "manifest.sig"
-$Pub = Join-Path $Work "release.pub"
-Set-Content -Path $Pub -Value @'
-%s
-'@ -Encoding ascii
+$Bundle = Join-Path $Work "manifest.json.sigstore.json"
+$Sums = Join-Path $Work "SHA256SUMS"
 
-if (-not (Select-String -Path $Pub -Pattern "BEGIN PUBLIC KEY" -Quiet)) {
-  throw "Kein Release-Public-Key im Installer. Siehe docs/release-signing.md"
+Write-Host "-> Lade Release-Artefakte von $ReleaseBase"
+Invoke-WebRequest -Uri "$ReleaseBase/manifest.json" -OutFile $Manifest -Headers $Headers
+Invoke-WebRequest -Uri "$ReleaseBase/manifest.json.sigstore.json" -OutFile $Bundle -Headers $Headers
+Invoke-WebRequest -Uri "$ReleaseBase/SHA256SUMS" -OutFile $Sums -Headers $Headers
+Invoke-WebRequest -Uri "$ReleaseBase/$Asset" -OutFile $ZipPath -Headers $Headers
+
+function Get-FileSha256([string]$Path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  return (-join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }))
 }
 
-Write-Host "-> Lade Manifest und Zip von $BaseUrl"
-Invoke-WebRequest -Uri "$BaseUrl/downloads/manifest.json" -OutFile $Manifest -Headers $Headers
-Invoke-WebRequest -Uri "$BaseUrl/downloads/manifest.sig" -OutFile $Sig -Headers $Headers
-Invoke-WebRequest -Uri "$BaseUrl/downloads/ssh-sync-windows-amd64.zip" -OutFile $ZipPath -Headers $Headers
-
-$verify = & openssl pkeyutl -verify -pubin -inkey $Pub -rawin -in $Manifest -sigfile $Sig 2>&1
-if ($LASTEXITCODE -ne 0) { throw "Manifest-Signatur ungueltig: $verify" }
-
-$asset = "ssh-sync-windows-amd64.zip"
-$json = Get-Content -Raw $Manifest
-if ($json -notmatch '"ssh-sync-windows-amd64\.zip"\s*:\s*"([0-9a-fA-F]{64})"') {
-  throw "Hash fuer Zip fehlt im Manifest"
+function Get-HashFromManifest([string]$AssetName, [string]$ManifestPath) {
+  $json = Get-Content -Raw $ManifestPath
+  if ($json -match [regex]::Escape('"' + $AssetName + '"') + '\s*:\s*"([0-9a-fA-F]{64})"') {
+    return $Matches[1].ToLowerInvariant()
+  }
+  $rx = '"filename"\s*:\s*"' + [regex]::Escape($AssetName) + '"[\s\S]*?"sha256"\s*:\s*"([0-9a-fA-F]{64})"'
+  if ($json -match $rx) {
+    return $Matches[1].ToLowerInvariant()
+  }
+  $rx2 = '"sha256"\s*:\s*"([0-9a-fA-F]{64})"[\s\S]*?"filename"\s*:\s*"' + [regex]::Escape($AssetName) + '"'
+  if ($json -match $rx2) {
+    return $Matches[1].ToLowerInvariant()
+  }
+  return $null
 }
-$want = $Matches[1].ToLowerInvariant()
-$sha = [System.Security.Cryptography.SHA256]::Create()
-$bytes = [System.IO.File]::ReadAllBytes($ZipPath)
-$got = -join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") })
-if ($got -ne $want) { throw "SHA-256 stimmt nicht" }
+
+function Get-HashFromSums([string]$AssetName, [string]$SumsPath) {
+  foreach ($line in Get-Content $SumsPath) {
+    if ($line -match '^([0-9a-fA-F]{64})\s+(\S+)$') {
+      $name = $Matches[2].TrimStart('.', '/', '\')
+      if ($name -eq $AssetName) { return $Matches[1].ToLowerInvariant() }
+    }
+  }
+  return $null
+}
+
+$cosign = Get-Command cosign -ErrorAction SilentlyContinue
+if ($null -ne $cosign) {
+  Write-Host "-> Pruefe Sigstore-Bundle mit cosign (GitHub Actions Identitaet)"
+  & cosign verify-blob --bundle $Bundle --certificate-identity-regexp $CosignIdentityRegexp --certificate-oidc-issuer $CosignOidcIssuer $Manifest
+  if ($LASTEXITCODE -ne 0) { throw "Sigstore-Verifikation fehlgeschlagen" }
+  $want = Get-HashFromManifest $Asset $Manifest
+  if (-not $want) { $want = Get-HashFromSums $Asset $Sums }
+  if (-not $want) { throw "Hash fuer $Asset fehlt in Manifest und SHA256SUMS" }
+  $got = Get-FileSha256 $ZipPath
+  if ($got -ne $want) { throw "SHA-256 stimmt nicht (got $got want $want)" }
+} elseif ($UnsicherNurPruefsumme) {
+  Write-Host "WARNUNG: cosign fehlt. Nur SHA-256 gegen SHA256SUMS. Keine Herkunftspruefung." -ForegroundColor Yellow
+  Write-Host "Repo-Referenz: $GithubRepo" -ForegroundColor Yellow
+  $want = Get-HashFromSums $Asset $Sums
+  if (-not $want) { throw "Hash fuer $Asset fehlt in SHA256SUMS" }
+  $got = Get-FileSha256 $ZipPath
+  if ($got -ne $want) { throw "SHA-256 stimmt nicht (got $got want $want)" }
+} else {
+  Write-Host ""
+  Write-Host "cosign fehlt. Herkunftspruefung (Sigstore) braucht cosign." -ForegroundColor Red
+  Write-Host "Installation (Beispiele):"
+  Write-Host "  winget install sigstore.cosign"
+  Write-Host "  oder: https://docs.sigstore.dev/cosign/system_config/installation/"
+  Write-Host ""
+  Write-Host "Manuelle Pruefung:"
+  Write-Host "  cosign verify-blob --bundle manifest.json.sigstore.json --certificate-identity-regexp '$CosignIdentityRegexp' --certificate-oidc-issuer $CosignOidcIssuer manifest.json"
+  Write-Host ""
+  Write-Host "Ohne cosign nur mit: powershell -File install-windows.ps1 -UnsicherNurPruefsumme"
+  throw "cosign erforderlich (oder -UnsicherNurPruefsumme)"
+}
 
 Expand-Archive -Path $ZipPath -DestinationPath $InstallDir -Force
 Remove-Item $ZipPath -Force
@@ -336,8 +517,9 @@ $serviceOk = Install-SshSyncWindowsService -ExePath $ExePath
 
 Write-Host ""
 Write-Host "Fertig. Binary: $ExePath"
+Write-Host "Portal: $PortalUrl"
 Write-Host "Updates: ssh-sync.exe update"
-`, base, windowsServiceInstallHelper(), base, pemEscaped)
+`, base, windowsServiceInstallHelper(), base, defaultReleaseBase)
 }
 
 func windowsServiceInstallScript(base string) string {
