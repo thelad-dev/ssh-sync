@@ -31,20 +31,8 @@ jobs:
             exit 1
           fi
           # CI-Workflow am getaggten Commit muss erfolgreich gewesen sein.
-          RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TAG_SHA}&status=completed&per_page=30")"
-          OK="$(printf '%s' "${RUN_JSON}" | python3 -c '
-import json,sys
-data=json.load(sys.stdin)
-ok=False
-for r in data.get("workflow_runs", []):
-  name=(r.get("name") or "").lower()
-  path=(r.get("path") or "")
-  if r.get("conclusion") == "success" and ("ci" == name or path.endswith("/ci.yml") or path.endswith("ci.yml")):
-    ok=True
-    break
-print("yes" if ok else "no")
-')"
-          if [ "${OK}" != "yes" ]; then
+          if ! gh run list --repo "${GITHUB_REPOSITORY}" --commit "${TAG_SHA}" --workflow ci.yml \
+            --json conclusion --jq 'any(.[]; .conclusion == "success")' | grep -qx true; then
             echo "Kein erfolgreicher CI-Lauf fuer Commit ${TAG_SHA}" >&2
             exit 1
           fi
