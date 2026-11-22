@@ -3,6 +3,10 @@ info:
   title: ssh-sync API
   version: 0.1.0
   description: Self-hosted SSH Key & Config Sync (clientseitige Verschluesselung; Auth-Schluessel getrennt vom Enc-Schluessel)
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
 servers:
   - url: http://localhost:8080
 paths:

@@ -3,9 +3,10 @@
 // Usage:
 //
 //	signrelease -version 1.2.3 -dir downloads -key release.ed25519.priv
+//	signrelease -verify -dir downloads
 //
 // The private key file contains 64 hex characters (ed25519 seed||pub or pure
-// 64-byte private key). Never commit the private key.
+// 32-byte seed as hex). Never commit the private key.
 package main
 
 import (
@@ -23,10 +24,22 @@ import (
 func main() {
 	dir := flag.String("dir", "downloads", "Verzeichnis mit Agent-Binaries")
 	version := flag.String("version", "", "Release-Version (semver-like)")
-	keyPath := flag.String("key", "", "Pfad zum Private-Key (64 Hex-Zeichen, eine Zeile)")
+	keyPath := flag.String("key", "", "Pfad zum Private-Key (32- oder 64-Byte Hex, eine Zeile)")
+	verifyOnly := flag.Bool("verify", false, "Nur Manifest-Signatur gegen eingebetteten Public Key pruefen")
 	flag.Parse()
+
+	if *verifyOnly {
+		if err := verifyDir(*dir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("Signatur ok")
+		return
+	}
+
 	if strings.TrimSpace(*version) == "" || strings.TrimSpace(*keyPath) == "" {
 		fmt.Fprintln(os.Stderr, "usage: signrelease -version 1.2.3 -key release.ed25519.priv [-dir downloads]")
+		fmt.Fprintln(os.Stderr, "       signrelease -verify [-dir downloads]")
 		os.Exit(2)
 	}
 	priv, err := loadPrivateKey(*keyPath)
@@ -75,6 +88,29 @@ func main() {
 	}
 	fmt.Printf("geschrieben: %s und %s (version %s, %d assets)\n",
 		releaseverify.ManifestName, releaseverify.SigName, *version, len(assets))
+}
+
+func verifyDir(dir string) error {
+	manifestPath := filepath.Join(dir, releaseverify.ManifestName)
+	sigPath := filepath.Join(dir, releaseverify.SigName)
+	manifestBytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return err
+	}
+	sig, err := os.ReadFile(sigPath)
+	if err != nil {
+		return err
+	}
+	m, err := releaseverify.VerifySignature(manifestBytes, sig)
+	if err != nil {
+		return err
+	}
+	for name := range m.Assets {
+		if err := releaseverify.VerifyAssetHash(m, name, filepath.Join(dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func loadPrivateKey(path string) (ed25519.PrivateKey, error) {

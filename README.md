@@ -102,6 +102,7 @@ web/          → Portal (ssh-sync)
 cmd/api/      → API + Static Files
 cmd/agent/    → CLI für Clients
 cmd/signrelease/ → Manifest signieren
+cmd/genreleasekey/ → Release-Seed offline erzeugen
 internal/     → crypto, store, api, sshconfig, releaseverify
 ```
 
@@ -116,4 +117,4 @@ API-Spec: `openapi.yaml`
 
 ## Lizenz
 
-Lizenz: wird vor der Veroeffentlichung festgelegt.
+Apache License 2.0. Siehe [LICENSE](LICENSE), [NOTICE](NOTICE) und [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

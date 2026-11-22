@@ -16,9 +16,10 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Go
-        uses: actions/setup-go@3041bf56c941df0392ffa9864cbf2f1b90bffca2 # v5.2.0
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
+          cache: true
 
       - name: Vet
         run: go vet ./...
@@ -30,3 +31,5 @@ jobs:
         run: |
           node web/keygen_test.mjs
           node web/login_form_test.mjs
+          node web/auth_no_password_test.mjs
+          node web/open_account_archive_test.mjs
