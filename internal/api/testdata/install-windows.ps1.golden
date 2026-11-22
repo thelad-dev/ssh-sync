@@ -74,7 +74,7 @@ function Assert-HttpsOrLoopback([string]$Url, [string]$Label) {
   if ($Url -match '^https://') { return }
   if ($Url -match '^http://(127\.0\.0\.1|localhost)(:|$)') { return }
   if ($Url -match '^http://') {
-    if (-not $AllowInsecure) { throw "$Label: http:// nur mit SSH_SYNC_ALLOW_INSECURE=1 oder Loopback" }
+    if (-not $AllowInsecure) { throw "${Label}: http:// nur mit SSH_SYNC_ALLOW_INSECURE=1 oder Loopback" }
     return
   }
   throw "$Label muss https:// (oder Loopback-http) sein: $Url"
