@@ -5,6 +5,7 @@ on:
     tags:
       - 'v*.*.*'
 
+# Default: read-only. Sign and draft jobs raise permissions explicitly.
 permissions:
   contents: read
 
@@ -89,11 +90,17 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  release:
+  # Keyless Sigstore signing + provenance. id-token and attestations only here.
+  # Trusted identity (client constants only in internal/releaseverify/identity.go):
+  #   issuer https://token.actions.githubusercontent.com
+  #   subject ^https://github\.com/thelad-dev/ssh-sync/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$
+  #   sourceRepositoryURI https://github.com/thelad-dev/ssh-sync
+  #   sourceRepositoryOwnerURI https://github.com/thelad-dev
+  sign:
     needs: [gate, build]
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write
       attestations: write
     steps:
@@ -112,32 +119,59 @@ jobs:
           name: agent-dist
           path: dist
 
-      - name: Build signrelease
-        run: CGO_ENABLED=0 go build -trimpath -o bin/signrelease ./cmd/signrelease
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
-      - name: Sign manifest
+      - name: Build mkmanifest
+        run: CGO_ENABLED=0 go build -trimpath -o bin/mkmanifest ./cmd/mkmanifest
+
+      - name: Create manifest.json
         env:
-          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
           AGENT_VERSION: ${{ needs.gate.outputs.version }}
         run: |
           set -euo pipefail
-          if [ -z "${RELEASE_SIGNING_KEY:-}" ]; then
-            echo "Secret RELEASE_SIGNING_KEY fehlt" >&2
-            exit 1
-          fi
-          KEYFILE="$(mktemp)"
-          trap 'rm -f "${KEYFILE}"' EXIT
-          # Secret nur in die Datei schreiben, niemals echo/cat ins Log.
-          printf '%s\n' "${RELEASE_SIGNING_KEY}" > "${KEYFILE}"
-          chmod 600 "${KEYFILE}"
-          ./bin/signrelease -version "${AGENT_VERSION}" -dir dist -key "${KEYFILE}"
-          rm -f "${KEYFILE}"
-          trap - EXIT
+          ./bin/mkmanifest -version "${AGENT_VERSION}" -dir dist
 
-      - name: Verify signature with embedded public key
+      - name: Sign manifest with Sigstore (keyless)
+        working-directory: dist
         run: |
           set -euo pipefail
-          ./bin/signrelease -verify -dir dist
+          cosign sign-blob --bundle manifest.json.sigstore.json manifest.json --yes
+
+      - name: Verify Sigstore bundle
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          cosign verify-blob \
+            --bundle manifest.json.sigstore.json \
+            --certificate-identity-regexp '^https://github\.com/thelad-dev/ssh-sync/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            manifest.json
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Upload signed dist
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: agent-dist-signed
+          path: dist/
+          if-no-files-found: error
+
+  # Draft release only. contents: write stays off the signing job.
+  draft:
+    needs: [gate, sign]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download signed dist
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: agent-dist-signed
+          path: dist
 
       - name: Draft GitHub Release
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
@@ -153,12 +187,7 @@ jobs:
             dist/ssh-sync-darwin-arm64
             dist/SHA256SUMS
             dist/manifest.json
-            dist/manifest.sig
+            dist/manifest.json.sigstore.json
           body: |
-            Entwurf: vor dem Veroeffentlichen Signatur, SHA256SUMS und Public-Key-Fingerabdruck pruefen.
-            Siehe docs/release.md.
-
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
-        with:
-          subject-checksums: dist/SHA256SUMS
+            Entwurf: vor dem Veroeffentlichen Sigstore-Bundle, SHA256SUMS und Manifest pruefen.
+            Keyless-Identitaet: workflow release.yml am Tag (siehe docs/release.md nach Merge von Doku/Verify).
