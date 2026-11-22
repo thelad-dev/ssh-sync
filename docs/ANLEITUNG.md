@@ -55,23 +55,41 @@ Bereits vorhandene Namen/Aliase werden übersprungen.
 
 ### Download
 
-Im Portal: Tab **Geräte** → **Installation (Linux / Windows)** (Einzeiler); Binaries auch direkt:
+Im Portal: Tab **Geräte** → **Installation (Linux / Windows)** (Skript speichern und lesen, kein `curl | sh`). Binaries und Signatur kommen vom **GitHub-Release** (`manifest.json`, `manifest.json.sigstore.json`, `SHA256SUMS`).
 
-- `https://<portal-url>/downloads/ssh-sync-linux-amd64`
-- `https://<portal-url>/downloads/ssh-sync-windows-amd64.exe`
+Voraussetzung fuer die Herkunftspruefung: [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) im PATH.
 
-### Installation Linux
+### Installation Linux / macOS
 
-Empfohlen (Binary nach `~/.local/bin`, systemd-User-Service best effort):
+Empfohlen (Binary nach `~/.local/bin`, unter Linux systemd-User-Service best effort):
 
 ```bash
 curl -fsSL "https://<portal-url>/install/linux.sh" -o install-linux.sh
-# lesen, dann: sh install-linux.sh
+# lesen, dann:
+sh install-linux.sh
+```
+
+Das Skript laedt vom GitHub-Release, prueft mit `cosign verify-blob` und vergleicht die Binary-SHA-256 mit dem signierten Manifest.
+
+Manuelle Pruefung:
+
+```bash
+cosign verify-blob \
+  --bundle manifest.json.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/thelad-dev/ssh-sync/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  manifest.json
+```
+
+Ohne cosign nur mit explizitem Schalter (Warnung: keine Herkunftspruefung, nur SHA-256 gegen `SHA256SUMS`):
+
+```bash
+sh install-linux.sh --unsicher-nur-pruefsumme
 ```
 
 Auf EndeavourOS/Arch ggf. `loginctl enable-linger $USER`, neu anmelden, dann `ssh-sync unlock` und `systemctl --user start ssh-sync`.
 
-Manuell (Binary aus Tab **Geräte** oder `/downloads/`):
+Manuell (Artefakte vom GitHub-Release, nach cosign-Pruefung):
 
 ```bash
 chmod +x ssh-sync-linux-amd64
@@ -89,7 +107,8 @@ Anleitung für Windows 11 Pro/Home (64-bit). Der empfohlene Weg ist das Portal-I
 
 - Windows 11 **22H2 oder neuer**, 64-bit
 - **PowerShell 5.1** (vorinstalliert) oder **Windows Terminal** mit PowerShell 5.1 / **PowerShell 7**
-- Netzwerk zum Portal (LAN/VPN oder `https://<portal-url>` mit Cloudflare Access)
+- **cosign** im PATH (Sigstore-Herkunftspruefung; sonst nur `-UnsicherNurPruefsumme`)
+- Netzwerk zum Portal (LAN/VPN oder `https://<portal-url>` mit Cloudflare Access) und zu GitHub Releases
 
 **PowerShell öffnen**
 
@@ -139,11 +158,12 @@ $headers = @{
 
 Das Skript (Quelle: `/install/windows.ps1` auf dem Portal):
 
-1. lädt `ssh-sync-windows-amd64.zip` von `$BaseUrl/downloads/…` (Standard: Portal-URL, überschreibbar mit `$env:SSH_SYNC_URL`)
-2. entpackt nach **`%LOCALAPPDATA%\Programs\ssh-sync\ssh-sync.exe`**
-3. hängt diesen Ordner an den **Benutzer-PATH** an
-4. entfernt die **Legacy-Geplanten-Aufgabe** `ssh-sync` (falls noch vorhanden)
-5. versucht, den Windows-Dienst **`ssh-sync`** zu installieren (nur mit Admin-Rechten)
+1. lädt `manifest.json`, `manifest.json.sigstore.json`, `SHA256SUMS` und `ssh-sync-windows-amd64.zip` vom GitHub-Release (Basis: `$env:SSH_SYNC_RELEASE_URL` oder `…/releases/latest/download`; Portal-URL nur fuer Hinweise, `$env:SSH_SYNC_URL`)
+2. prueft mit `cosign verify-blob` (oder bei `-UnsicherNurPruefsumme` nur SHA-256 gegen `SHA256SUMS`)
+3. entpackt nach **`%LOCALAPPDATA%\Programs\ssh-sync\ssh-sync.exe`**
+4. hängt diesen Ordner an den **Benutzer-PATH** an
+5. entfernt die **Legacy-Geplanten-Aufgabe** `ssh-sync` (falls noch vorhanden)
+6. versucht, den Windows-Dienst **`ssh-sync`** zu installieren (nur mit Admin-Rechten)
 
 Am Ende gibt das Skript u. a. aus  -  Punkt 4 unter «Nächste Schritte» hängt davon ab, ob die Dienst-Installation gelungen ist:
 
@@ -294,7 +314,7 @@ Wenn du nach dem Sync **OpenSSH** in Windows Terminal nutzt:
 | Download liefert HTML | Cloudflare-Login-Seite  -  CF-Header setzen oder Bypass für `/install` (siehe cloudflare-access.md) |
 | Keine Keys nach Sync | Host ohne Identity-Zuweisung, Daemon/Unlock fehlt, oder Sync noch nicht ausgeloest |
 
-Manuelles Binary (nur Fallback): `https://<portal-url>/downloads/ssh-sync-windows-amd64.exe`  -  dann Pfad selbst in PATH legen und Dienst per `ssh-sync service install` einrichten.
+Manuelles Binary (nur Fallback): GitHub-Release `ssh-sync-windows-amd64.exe` nach cosign-/Manifest-Pruefung  -  dann Pfad selbst in PATH legen und Dienst per `ssh-sync service install` einrichten.
 
 ### Hintergrund-Agent Linux (empfohlen)
 

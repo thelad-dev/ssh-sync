@@ -1,0 +1,193 @@
+# ssh-sync  -  Windows Installer (PowerShell)
+# Empfohlen: Skript speichern, lesen, dann ausfuehren. Nicht: irm | iex
+#   Invoke-WebRequest -Uri 'https://portal.example/install/windows.ps1' -OutFile install-windows.ps1
+#   notepad install-windows.ps1
+#   powershell -File install-windows.ps1
+# Optional ohne cosign (KEINE Herkunftspruefung):
+#   powershell -File install-windows.ps1 -UnsicherNurPruefsumme
+param(
+  [switch]$UnsicherNurPruefsumme
+)
+$ErrorActionPreference = "Stop"
+
+function Remove-LegacySshSyncTask {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'SilentlyContinue'
+  Stop-ScheduledTask -TaskName 'ssh-sync' -ErrorAction SilentlyContinue | Out-Null
+  cmd.exe /c 'schtasks /End /TN ssh-sync 2>nul' | Out-Null
+  cmd.exe /c 'schtasks /Delete /TN ssh-sync /F 2>nul' | Out-Null
+  $ErrorActionPreference = $prev
+}
+
+function Test-IsAdmin {
+  $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $p = New-Object Security.Principal.WindowsPrincipal $id
+  return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Install-SshSyncWindowsService {
+  param([Parameter(Mandatory = $true)][string]$ExePath)
+
+  $domainUser = "$env:USERDOMAIN\$env:USERNAME"
+
+  if (-not (Test-IsAdmin)) {
+    Write-Host "-> Dienst-Installation uebersprungen (keine Administrator-Rechte)" -ForegroundColor Yellow
+    Write-Host "  Spaeter: ssh-sync.exe service install --user $domainUser"
+    return $false
+  }
+
+  Write-Host "-> Windows-Dienst installieren (Konto: $domainUser)"
+  Write-Host "  Anmeldedialog: Windows-Passwort fuer Dienst-Konto (nicht ssh-sync Master-Passwort)"
+
+  $cred = Get-Credential -UserName $domainUser -Message "Windows-Passwort fuer ssh-sync Dienst"
+  if ($null -eq $cred) {
+    Write-Host "-> Abgebrochen" -ForegroundColor Yellow
+    return $false
+  }
+  $BSTR = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($cred.Password)
+  try {
+    $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+    $plain | & $ExePath service install --user $domainUser --password-stdin
+  } finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+    $plain = $null
+  }
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "-> Dienst ssh-sync installiert" -ForegroundColor Green
+    return $true
+  }
+
+  Write-Host "-> Dienst-Installation fehlgeschlagen" -ForegroundColor Yellow
+  Write-Host "  Manuell: ssh-sync.exe service repair --user $domainUser"
+  return $false
+}
+
+$PortalUrl = if ($env:SSH_SYNC_URL) { $env:SSH_SYNC_URL } else { "https://portal.example" }
+$ReleaseBase = if ($env:SSH_SYNC_RELEASE_URL) { $env:SSH_SYNC_RELEASE_URL } else { "https://github.com/thelad-dev/ssh-sync/releases/latest/download" }
+$AllowInsecure = $env:SSH_SYNC_ALLOW_INSECURE -eq "1"
+# Identitaet: kanonisch internal/releaseverify/identity.go (nach Merge Worker V)
+$CosignOidcIssuer = "https://token.actions.githubusercontent.com"
+$CosignIdentityRegexp = '^https://github\.com/thelad-dev/ssh-sync/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+$GithubRepo = "https://github.com/thelad-dev/ssh-sync"
+
+function Assert-HttpsOrLoopback([string]$Url, [string]$Label) {
+  if ($Url -match '^https://') { return }
+  if ($Url -match '^http://(127\.0\.0\.1|localhost)(:|$)') { return }
+  if ($Url -match '^http://') {
+    if (-not $AllowInsecure) { throw "$Label: http:// nur mit SSH_SYNC_ALLOW_INSECURE=1 oder Loopback" }
+    return
+  }
+  throw "$Label muss https:// (oder Loopback-http) sein: $Url"
+}
+
+Assert-HttpsOrLoopback $PortalUrl "PORTAL_URL / SSH_SYNC_URL"
+Assert-HttpsOrLoopback $ReleaseBase "RELEASE_BASE / SSH_SYNC_RELEASE_URL"
+
+$InstallDir = Join-Path $env:LOCALAPPDATA "Programs\ssh-sync"
+$ZipPath = Join-Path $env:TEMP "ssh-sync-windows-amd64.zip"
+$ExePath = Join-Path $InstallDir "ssh-sync.exe"
+$Work = Join-Path $env:TEMP ("ssh-sync-install-" + [guid]::NewGuid().ToString("n"))
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+New-Item -ItemType Directory -Force -Path $Work | Out-Null
+
+$Headers = @{}
+if ($env:CF_ACCESS_CLIENT_ID) { $Headers["CF-Access-Client-Id"] = $env:CF_ACCESS_CLIENT_ID }
+if ($env:CF_ACCESS_CLIENT_SECRET) { $Headers["CF-Access-Client-Secret"] = $env:CF_ACCESS_CLIENT_SECRET }
+
+$Asset = "ssh-sync-windows-amd64.zip"
+$Manifest = Join-Path $Work "manifest.json"
+$Bundle = Join-Path $Work "manifest.json.sigstore.json"
+$Sums = Join-Path $Work "SHA256SUMS"
+
+Write-Host "-> Lade Release-Artefakte von $ReleaseBase"
+Invoke-WebRequest -Uri "$ReleaseBase/manifest.json" -OutFile $Manifest -Headers $Headers
+Invoke-WebRequest -Uri "$ReleaseBase/manifest.json.sigstore.json" -OutFile $Bundle -Headers $Headers
+Invoke-WebRequest -Uri "$ReleaseBase/SHA256SUMS" -OutFile $Sums -Headers $Headers
+Invoke-WebRequest -Uri "$ReleaseBase/$Asset" -OutFile $ZipPath -Headers $Headers
+
+function Get-FileSha256([string]$Path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $bytes = [System.IO.File]::ReadAllBytes($Path)
+  return (-join ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }))
+}
+
+function Get-HashFromManifest([string]$AssetName, [string]$ManifestPath) {
+  $json = Get-Content -Raw $ManifestPath
+  if ($json -match [regex]::Escape('"' + $AssetName + '"') + '\s*:\s*"([0-9a-fA-F]{64})"') {
+    return $Matches[1].ToLowerInvariant()
+  }
+  $rx = '"filename"\s*:\s*"' + [regex]::Escape($AssetName) + '"[\s\S]*?"sha256"\s*:\s*"([0-9a-fA-F]{64})"'
+  if ($json -match $rx) {
+    return $Matches[1].ToLowerInvariant()
+  }
+  $rx2 = '"sha256"\s*:\s*"([0-9a-fA-F]{64})"[\s\S]*?"filename"\s*:\s*"' + [regex]::Escape($AssetName) + '"'
+  if ($json -match $rx2) {
+    return $Matches[1].ToLowerInvariant()
+  }
+  return $null
+}
+
+function Get-HashFromSums([string]$AssetName, [string]$SumsPath) {
+  foreach ($line in Get-Content $SumsPath) {
+    if ($line -match '^([0-9a-fA-F]{64})\s+(\S+)$') {
+      $name = $Matches[2].TrimStart('.', '/', '\')
+      if ($name -eq $AssetName) { return $Matches[1].ToLowerInvariant() }
+    }
+  }
+  return $null
+}
+
+$cosign = Get-Command cosign -ErrorAction SilentlyContinue
+if ($null -ne $cosign) {
+  Write-Host "-> Pruefe Sigstore-Bundle mit cosign (GitHub Actions Identitaet)"
+  & cosign verify-blob --bundle $Bundle --certificate-identity-regexp $CosignIdentityRegexp --certificate-oidc-issuer $CosignOidcIssuer $Manifest
+  if ($LASTEXITCODE -ne 0) { throw "Sigstore-Verifikation fehlgeschlagen" }
+  $want = Get-HashFromManifest $Asset $Manifest
+  if (-not $want) { $want = Get-HashFromSums $Asset $Sums }
+  if (-not $want) { throw "Hash fuer $Asset fehlt in Manifest und SHA256SUMS" }
+  $got = Get-FileSha256 $ZipPath
+  if ($got -ne $want) { throw "SHA-256 stimmt nicht (got $got want $want)" }
+} elseif ($UnsicherNurPruefsumme) {
+  Write-Host "WARNUNG: cosign fehlt. Nur SHA-256 gegen SHA256SUMS. Keine Herkunftspruefung." -ForegroundColor Yellow
+  Write-Host "Repo-Referenz: $GithubRepo" -ForegroundColor Yellow
+  $want = Get-HashFromSums $Asset $Sums
+  if (-not $want) { throw "Hash fuer $Asset fehlt in SHA256SUMS" }
+  $got = Get-FileSha256 $ZipPath
+  if ($got -ne $want) { throw "SHA-256 stimmt nicht (got $got want $want)" }
+} else {
+  Write-Host ""
+  Write-Host "cosign fehlt. Herkunftspruefung (Sigstore) braucht cosign." -ForegroundColor Red
+  Write-Host "Installation (Beispiele):"
+  Write-Host "  winget install sigstore.cosign"
+  Write-Host "  oder: https://docs.sigstore.dev/cosign/system_config/installation/"
+  Write-Host ""
+  Write-Host "Manuelle Pruefung:"
+  Write-Host "  cosign verify-blob --bundle manifest.json.sigstore.json --certificate-identity-regexp '$CosignIdentityRegexp' --certificate-oidc-issuer $CosignOidcIssuer manifest.json"
+  Write-Host ""
+  Write-Host "Ohne cosign nur mit: powershell -File install-windows.ps1 -UnsicherNurPruefsumme"
+  throw "cosign erforderlich (oder -UnsicherNurPruefsumme)"
+}
+
+Expand-Archive -Path $ZipPath -DestinationPath $InstallDir -Force
+Remove-Item $ZipPath -Force
+Remove-Item -Recurse -Force $Work
+
+$Extracted = Join-Path $InstallDir "ssh-sync-windows-amd64.exe"
+if (Test-Path $Extracted) {
+  Move-Item -Force $Extracted $ExePath
+}
+
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($userPath -notlike "*$InstallDir*") {
+  [Environment]::SetEnvironmentVariable("Path", "$userPath;$InstallDir", "User")
+  $env:Path = "$env:Path;$InstallDir"
+}
+
+$ServiceName = "ssh-sync"
+Remove-LegacySshSyncTask
+$serviceOk = Install-SshSyncWindowsService -ExePath $ExePath
+
+Write-Host ""
+Write-Host "Fertig. Binary: $ExePath"
+Write-Host "Portal: $PortalUrl"
+Write-Host "Updates: ssh-sync.exe update"
