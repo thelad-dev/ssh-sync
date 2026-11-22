@@ -429,6 +429,103 @@ exit 0
 	}
 }
 
+func TestLinuxInstallScriptCosignAcceptsMkmanifestFormat(t *testing.T) {
+	payload := make([]byte, 2048)
+	for i := range payload {
+		payload[i] = byte('D')
+	}
+	sum := sha256.Sum256(payload)
+	hashHex := hex.EncodeToString(sum[:])
+
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	binDir := filepath.Join(root, "bin")
+	installDir := filepath.Join(home, ".local", "bin")
+	assetDir := filepath.Join(root, "assets")
+	for _, d := range []string{binDir, assetDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := `{
+  "version": "1.0.0",
+  "artifacts": [
+    {
+      "platform": "linux-amd64",
+      "filename": "ssh-sync-linux-amd64",
+      "sha256": "` + hashHex + `",
+      "size": 2048
+    }
+  ]
+}
+`
+	for name, body := range map[string]string{
+		"manifest.json":               manifest,
+		"manifest.json.sigstore.json": `{"dummy":"bundle"}`,
+		"SHA256SUMS":                  strings.Repeat("0", 64) + "  ssh-sync-linux-amd64\n",
+		"ssh-sync-linux-amd64":        string(payload),
+	} {
+		if err := os.WriteFile(filepath.Join(assetDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, body := range map[string]string{
+		"curl":      "#!/bin/sh\ndest=\"\"; url=\"\"; while [ $# -gt 0 ]; do case \"$1\" in -o) dest=\"$2\"; shift 2;; -H|--header|-fsSL) shift;; http*|https*) url=\"$1\"; shift;; *) shift;; esac; done; cp \"" + assetDir + "/$(basename \"$url\")\" \"$dest\"\n",
+		"cosign":    "#!/bin/sh\nexit 0\n",
+		"systemctl": "#!/bin/sh\nexit 1\n",
+	} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	scriptPath := filepath.Join(root, "install.sh")
+	if err := os.WriteFile(scriptPath, []byte(LinuxInstallScript("http://127.0.0.1:9")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ran := 0
+	for _, impl := range []string{"mawk", "gawk"} {
+		awkPath, err := exec.LookPath(impl)
+		if err != nil {
+			t.Logf("%s nicht verfuegbar, uebersprungen", impl)
+			continue
+		}
+		implDir := filepath.Join(root, "awk-"+impl)
+		if err := os.MkdirAll(implDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		wrapper := "#!/bin/sh\nexec " + awkPath + " \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(implDir, "awk"), []byte(wrapper), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.RemoveAll(installDir)
+		pathEnv := implDir + ":" + binDir + ":/usr/bin:/bin"
+		if p := os.Getenv("PATH"); p != "" {
+			pathEnv = implDir + ":" + binDir + ":" + p
+		}
+		cmd := exec.Command("sh", scriptPath)
+		cmd.Env = append(os.Environ(),
+			"PATH="+pathEnv,
+			"HOME="+home,
+			"INSTALL_DIR="+installDir,
+			"SSH_SYNC_RELEASE_URL=http://127.0.0.1:9/rel",
+			"SSH_SYNC_ALLOW_INSECURE=1",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: erwartet Erfolg mit mkmanifest-Format, got %v\n%s", impl, err, out)
+		}
+		if _, err := os.Stat(filepath.Join(installDir, "ssh-sync")); err != nil {
+			t.Fatalf("%s: binary fehlt: %v\n%s", impl, err, out)
+		}
+		ran++
+	}
+	if ran == 0 {
+		t.Fatal("weder mawk noch gawk verfuegbar")
+	}
+}
+
 func TestLinuxInstallScriptCosignRequiresManifestDigest(t *testing.T) {
 	payload := make([]byte, 2048)
 	for i := range payload {

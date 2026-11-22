@@ -226,12 +226,15 @@ hash_from_manifest() {
         sub(/".*$/, "", fn)
         if (fn == a) { want = 1; next }
       }
-      if (want && match($0, /"sha256"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]{64}"/)) {
+      # Kein {64}: mawk (Debian-Default-awk) kennt diese ERE-Quantifier nicht.
+      if (want && match($0, /"sha256"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]+"/)) {
         s = substr($0, RSTART, RLENGTH)
         sub(/^.*"sha256"[[:space:]]*:[[:space:]]*"/, "", s)
         sub(/".*$/, "", s)
-        print tolower(s)
-        exit
+        if (length(s) == 64) {
+          print tolower(s)
+          exit
+        }
       }
       if (want && /\{/) want = 0
     }
