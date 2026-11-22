@@ -48,8 +48,8 @@ type Options struct {
 	AllowDowngrade     bool
 	CurrentVersion     string // leer = version.Agent
 	HTTPClient         *http.Client
-	// VerifyManifest overrides Sigstore verification (tests only).
-	VerifyManifest func(manifestBytes, bundleBytes []byte, currentVersion string, allowDowngrade bool) (*releaseverify.Manifest, error)
+	// verifyManifest overrides Sigstore verification (tests in this package only).
+	verifyManifest func(manifestBytes, bundleBytes []byte, currentVersion string, allowDowngrade bool) (*releaseverify.Manifest, error)
 }
 
 type Result struct {
@@ -102,7 +102,7 @@ func Apply(opts Options) (*Result, error) {
 		return nil, fmt.Errorf("%s: %w", releaseverify.BundleName, err)
 	}
 
-	verifyFn := opts.VerifyManifest
+	verifyFn := opts.verifyManifest
 	if verifyFn == nil {
 		verifyFn = func(manifestBytes, bundleBytes []byte, currentVersion string, allowDowngrade bool) (*releaseverify.Manifest, error) {
 			return releaseverify.VerifyManifestBundle(manifestBytes, bundleBytes, releaseverify.VerifyOpts{

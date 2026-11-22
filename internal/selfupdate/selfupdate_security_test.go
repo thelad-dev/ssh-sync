@@ -91,7 +91,7 @@ func TestApplyRejectsBadBundleWrongHashAndStaleVersion(t *testing.T) {
 		DestPath:       dest,
 		CurrentVersion: "2.0.0",
 		Insecure:       true,
-		VerifyManifest: verifyOK,
+		verifyManifest: verifyOK,
 	})
 	if err == nil || !strings.Contains(err.Error(), "kein neueres") {
 		t.Fatalf("stale version: %v", err)
@@ -114,7 +114,7 @@ func TestApplyRejectsBadBundleWrongHashAndStaleVersion(t *testing.T) {
 		DestPath:       dest,
 		CurrentVersion: "1.0.0",
 		Insecure:       true,
-		VerifyManifest: verifyOK,
+		verifyManifest: verifyOK,
 	})
 	if err == nil || !strings.Contains(err.Error(), "Signatur") {
 		t.Fatalf("bad bundle: %v", err)
@@ -141,7 +141,7 @@ func TestApplyRejectsBadBundleWrongHashAndStaleVersion(t *testing.T) {
 		DestPath:       dest,
 		CurrentVersion: "1.0.0",
 		Insecure:       true,
-		VerifyManifest: verifyOK,
+		verifyManifest: verifyOK,
 	})
 	if err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatalf("wrong hash: %v", err)
@@ -152,7 +152,7 @@ func TestApplyRejectsBadBundleWrongHashAndStaleVersion(t *testing.T) {
 		DestPath:       dest,
 		CurrentVersion: "1.0.0",
 		Insecure:       true,
-		VerifyManifest: verifyOK,
+		verifyManifest: verifyOK,
 	})
 	if err != nil {
 		t.Fatal(err)

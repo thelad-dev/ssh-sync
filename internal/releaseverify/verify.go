@@ -11,16 +11,19 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 
-// VerifyOpts controls manifest bundle verification and downgrade protection.
+// VerifyOpts controls downgrade protection for release verification.
+// Identity and trusted root cannot be overridden from outside this package;
+// test code in package releaseverify may set the unexported fields.
 type VerifyOpts struct {
 	// CurrentVersion is the installed agent version. Empty skips the upgrade check.
 	CurrentVersion string
 	// AllowDowngrade permits installing a version that is not strictly newer.
 	AllowDowngrade bool
-	// TrustedMaterial overrides the embedded public-good root (tests).
-	TrustedMaterial root.TrustedMaterial
-	// CertificateIdentity overrides the production GitHub Actions identity (tests).
-	CertificateIdentity *verify.CertificateIdentity
+
+	// trustedMaterial overrides the embedded public-good root (tests in this package only).
+	trustedMaterial root.TrustedMaterial
+	// certificateIdentity overrides the production GitHub Actions identity (tests only).
+	certificateIdentity *verify.CertificateIdentity
 }
 
 // ProductionCertificateIdentity builds the Fulcio identity policy for ssh-sync releases.
@@ -68,12 +71,12 @@ func VerifyManifestBundle(manifestBytes, bundleBytes []byte, opts VerifyOpts) (*
 	if !b.MinVersion("0.3") {
 		return nil, fmt.Errorf("Sigstore-Bundle: Version unter 0.3")
 	}
-	return VerifySignedEntity(manifestBytes, &b, opts)
+	return verifySignedEntity(manifestBytes, &b, opts)
 }
 
-// VerifySignedEntity verifies a signed entity (bundle or test entity) over manifest bytes.
-func VerifySignedEntity(manifestBytes []byte, entity verify.SignedEntity, opts VerifyOpts) (*Manifest, error) {
-	material := opts.TrustedMaterial
+// verifySignedEntity verifies a signed entity (bundle or test entity) over manifest bytes.
+func verifySignedEntity(manifestBytes []byte, entity verify.SignedEntity, opts VerifyOpts) (*Manifest, error) {
+	material := opts.trustedMaterial
 	if material == nil {
 		tr, err := EmbeddedTrustedRoot()
 		if err != nil {
@@ -82,7 +85,7 @@ func VerifySignedEntity(manifestBytes []byte, entity verify.SignedEntity, opts V
 		material = tr
 	}
 
-	identity := opts.CertificateIdentity
+	identity := opts.certificateIdentity
 	if identity == nil {
 		id, err := ProductionCertificateIdentity()
 		if err != nil {

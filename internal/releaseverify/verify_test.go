@@ -94,10 +94,10 @@ func TestVerifySignedEntityValid(t *testing.T) {
 		t.Fatal(err)
 	}
 	certID := testIdentity(t, TrustedOIDCIssuer, SubjectSANRegex, false)
-	got, err := VerifySignedEntity(manifestBytes, entity, VerifyOpts{
+	got, err := verifySignedEntity(manifestBytes, entity, VerifyOpts{
 		CurrentVersion:      "1.0.0",
-		TrustedMaterial:     vs,
-		CertificateIdentity: &certID,
+		trustedMaterial:     vs,
+		certificateIdentity: &certID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -127,9 +127,9 @@ func TestVerifySignedEntityWrongIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	certID := testIdentity(t, TrustedOIDCIssuer, SubjectSANRegex, false)
-	if _, err := VerifySignedEntity(manifestBytes, entity, VerifyOpts{
-		TrustedMaterial:     vs,
-		CertificateIdentity: &certID,
+	if _, err := verifySignedEntity(manifestBytes, entity, VerifyOpts{
+		trustedMaterial:     vs,
+		certificateIdentity: &certID,
 	}); err == nil {
 		t.Fatal("expected identity rejection")
 	}
@@ -147,9 +147,9 @@ func TestVerifySignedEntityWrongIssuer(t *testing.T) {
 		t.Fatal(err)
 	}
 	certID := testIdentity(t, TrustedOIDCIssuer, SubjectSANRegex, false)
-	if _, err := VerifySignedEntity(manifestBytes, entity, VerifyOpts{
-		TrustedMaterial:     vs,
-		CertificateIdentity: &certID,
+	if _, err := verifySignedEntity(manifestBytes, entity, VerifyOpts{
+		trustedMaterial:     vs,
+		certificateIdentity: &certID,
 	}); err == nil {
 		t.Fatal("expected issuer rejection")
 	}
@@ -168,9 +168,9 @@ func TestVerifySignedEntityManipulatedManifest(t *testing.T) {
 	}
 	tampered := sampleManifest("9.9.9", "a.bin", hex.EncodeToString(sum[:]), 1)
 	certID := testIdentity(t, TrustedOIDCIssuer, SubjectSANRegex, false)
-	if _, err := VerifySignedEntity(tampered, entity, VerifyOpts{
-		TrustedMaterial:     vs,
-		CertificateIdentity: &certID,
+	if _, err := verifySignedEntity(tampered, entity, VerifyOpts{
+		trustedMaterial:     vs,
+		certificateIdentity: &certID,
 	}); err == nil {
 		t.Fatal("expected manipulated manifest rejection")
 	}
@@ -190,9 +190,9 @@ func TestVerifySignedEntityExpired(t *testing.T) {
 		t.Fatal(err)
 	}
 	certID := testIdentity(t, TrustedOIDCIssuer, SubjectSANRegex, false)
-	if _, err := VerifySignedEntity(manifestBytes, entity, VerifyOpts{
-		TrustedMaterial:     vs,
-		CertificateIdentity: &certID,
+	if _, err := verifySignedEntity(manifestBytes, entity, VerifyOpts{
+		trustedMaterial:     vs,
+		certificateIdentity: &certID,
 	}); err == nil {
 		t.Fatal("expected expired certificate rejection")
 	}
@@ -210,18 +210,18 @@ func TestVerifySignedEntityDowngrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	certID := testIdentity(t, TrustedOIDCIssuer, SubjectSANRegex, false)
-	if _, err := VerifySignedEntity(manifestBytes, entity, VerifyOpts{
+	if _, err := verifySignedEntity(manifestBytes, entity, VerifyOpts{
 		CurrentVersion:      "2.0.0",
-		TrustedMaterial:     vs,
-		CertificateIdentity: &certID,
+		trustedMaterial:     vs,
+		certificateIdentity: &certID,
 	}); err == nil || !strings.Contains(err.Error(), "kein neueres") {
 		t.Fatalf("expected downgrade rejection, got %v", err)
 	}
-	if _, err := VerifySignedEntity(manifestBytes, entity, VerifyOpts{
+	if _, err := verifySignedEntity(manifestBytes, entity, VerifyOpts{
 		CurrentVersion:      "2.0.0",
 		AllowDowngrade:      true,
-		TrustedMaterial:     vs,
-		CertificateIdentity: &certID,
+		trustedMaterial:     vs,
+		certificateIdentity: &certID,
 	}); err != nil {
 		t.Fatal(err)
 	}
