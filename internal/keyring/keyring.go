@@ -36,6 +36,10 @@ func GetMasterPassword() (string, error) {
 	if pw, err := readMasterFile(); err == nil && pw != "" {
 		return pw, nil
 	}
+	if pw, err := readLegacyMasterFile(); err == nil && pw != "" {
+		_ = writeMasterFile(pw)
+		return pw, nil
+	}
 	if preferFileStorage() {
 		return "", fmt.Errorf("master-passwort nicht gespeichert — zuerst: ssh-sync unlock")
 	}
@@ -43,7 +47,48 @@ func GetMasterPassword() (string, error) {
 	if pw, err := keyringGet(user); err == nil && pw != "" {
 		return pw, nil
 	}
+	if pw, err := legacyKeyringGet(user); err == nil && pw != "" {
+		_ = keyringSet(user, pw)
+		return pw, nil
+	}
 	return "", fmt.Errorf("master-passwort nicht gespeichert — zuerst: ssh-sync unlock")
+}
+
+const legacyService = "ssh-profile-syncer"
+
+// LegacyMasterFilePath is the .master-key path of ssh-profile-syncer.
+func LegacyMasterFilePath(home string) string {
+	return filepath.Join(home, ".config", "ssh-profile-syncer", masterFileName)
+}
+
+func legacyMasterFilePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return LegacyMasterFilePath(home), nil
+}
+
+func readLegacyMasterFile() (string, error) {
+	path, err := legacyMasterFilePath()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func legacyKeyringGet(user string) (string, error) {
+	var pw string
+	err := withKeyringTimeout(func() error {
+		var err error
+		pw, err = zkeyring.Get(legacyService, user)
+		return err
+	})
+	return pw, err
 }
 
 func DeleteMasterPassword() error {

@@ -237,6 +237,32 @@ func (a *API) ListDevices() ([]DeviceView, error) {
 	return list, nil
 }
 
+func (a *API) RotateDevice(id string) (string, error) {
+	req, err := http.NewRequest(http.MethodPost, a.BaseURL+"/api/devices/"+id+"/rotate", nil)
+	if err != nil {
+		return "", err
+	}
+	a.setHeaders(req)
+	res, err := a.HTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		return "", readAPIError(res)
+	}
+	var out struct {
+		JWT string `json:"jwt"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.JWT == "" {
+		return "", fmt.Errorf("rotate: leeres jwt")
+	}
+	return out.JWT, nil
+}
+
 func (a *API) RegisterDevice(name string) (*RegisterDeviceResponse, error) {
 	body, _ := json.Marshal(map[string]string{"name": name})
 	req, err := http.NewRequest(http.MethodPost, a.BaseURL+"/api/devices", bytes.NewReader(body))

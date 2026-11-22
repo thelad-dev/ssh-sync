@@ -34,7 +34,11 @@ func subtleConstantTimeEq(a, b string) bool {
 const (
 	upgradeFailWindow = 5 * time.Minute
 	upgradeFailMax    = 5
+	rotateWindow      = 5 * time.Minute
 )
+
+// rotateMax limits device-token rotates per window (tests may lower this).
+var rotateMax = 20
 
 type Server struct {
 	store         *store.Store
@@ -42,6 +46,8 @@ type Server struct {
 	mux           *http.ServeMux
 	upgradeFailMu sync.Mutex
 	upgradeFails  []time.Time
+	rotateMu      sync.Mutex
+	rotateTimes   []time.Time
 }
 
 func NewServer(st *store.Store, secret []byte) *Server {
@@ -75,6 +81,7 @@ func (s *Server) routes() {
 
 	s.mux.Handle("GET /api/devices", s.requireUser(http.HandlerFunc(s.handleListDevices)))
 	s.mux.Handle("POST /api/devices", s.requireUser(http.HandlerFunc(s.handleCreateDevice)))
+	s.mux.Handle("POST /api/devices/{id}/rotate", s.requireUser(http.HandlerFunc(s.handleRotateDevice)))
 	s.mux.Handle("DELETE /api/devices/{id}", s.requireUser(http.HandlerFunc(s.handleDeleteDevice)))
 
 	s.mux.Handle("GET /api/sync", s.requireDevice(http.HandlerFunc(s.handleSync)))
@@ -648,6 +655,63 @@ func (s *Server) handleCreateDevice(w http.ResponseWriter, r *http.Request) {
 		"device_token": rawToken,
 		"jwt":          jwtToken,
 	})
+}
+
+func (s *Server) handleRotateDevice(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validResourceID(id) {
+		writeError(w, http.StatusBadRequest, "ungültige id")
+		return
+	}
+	if !s.allowRotateAttempt() {
+		log.Printf("audit: device rotate rate-limited id=%s", id)
+		writeError(w, http.StatusTooManyRequests, "zu viele rotate-versuche, spaeter erneut")
+		return
+	}
+	if _, err := s.store.GetDevice(id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("audit: device rotate not-found id=%s", id)
+			writeError(w, http.StatusNotFound, "gerät nicht gefunden")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	jwtToken, err := auth.IssueDeviceToken(s.secret, id, auth.DeviceTokenTTL)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.store.UpdateDeviceTokenHash(id, auth.HashToken(jwtToken)); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.recordRotate()
+	log.Printf("audit: device rotate ok id=%s", id)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"id":  id,
+		"jwt": jwtToken,
+	})
+}
+
+func (s *Server) allowRotateAttempt() bool {
+	s.rotateMu.Lock()
+	defer s.rotateMu.Unlock()
+	cutoff := time.Now().Add(-rotateWindow)
+	kept := s.rotateTimes[:0]
+	for _, t := range s.rotateTimes {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	s.rotateTimes = kept
+	return len(s.rotateTimes) < rotateMax
+}
+
+func (s *Server) recordRotate() {
+	s.rotateMu.Lock()
+	defer s.rotateMu.Unlock()
+	s.rotateTimes = append(s.rotateTimes, time.Now())
 }
 
 func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {

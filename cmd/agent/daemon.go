@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/thelad-dev/ssh-sync/internal/agentauth"
 	"github.com/thelad-dev/ssh-sync/internal/agentconfig"
 	"github.com/thelad-dev/ssh-sync/internal/agentsync"
 	"github.com/thelad-dev/ssh-sync/internal/client"
@@ -46,6 +47,9 @@ func runDaemon(cfgPath string, args []string) {
 		close(stop)
 	}()
 
+	if err := agentauth.EnsureDeviceJWT(*configPath, cfg); err != nil {
+		log.Printf("geraete-token erneuern fehlgeschlagen: %v", err)
+	}
 	runDaemonUntil(cfg, stop)
 }
 
