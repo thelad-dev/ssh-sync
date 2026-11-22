@@ -130,7 +130,10 @@ async function onLogin() {
     let res;
     try {
       res = await api.login(bytesToHex(cryptoKeys.authKey));
-    } catch {
+    } catch (loginErr) {
+      if (!/konto ist noch legacy/i.test(String(loginErr.message || loginErr))) {
+        throw loginErr;
+      }
       res = await api.loginLegacy(password);
       setToken(res.token);
       if (res.auth_scheme !== 'auth_v1') {
@@ -480,7 +483,7 @@ function renderDevices() {
         <span class="status-pill ${st.className}" title="Letzter Agent-Ping">${esc(st.label)}</span>
         <button data-import-device="${esc(d.id)}" class="secondary">Import</button>
         <button data-sync-device="${esc(d.id)}" class="secondary">Sync</button>
-        <button data-purge-device="${esc(d.id)}" class="danger secondary" title="Gerät abgeben - entfernt nur vom Syncer verwaltete SSH-Einträge">Abgeben</button>
+        <button data-purge-device="${esc(d.id)}" class="danger secondary" title="Gerät abgeben - loescht ~/.ssh (ohne authorized_keys/known_hosts), Config und Binary">Abgeben</button>
         ${getSavedDeviceSetup(d.id) ? `<button data-setup-device="${esc(d.id)}" class="secondary">Config</button>` : ''}
         <button data-del-device="${esc(d.id)}" class="danger">×</button>
       </header>

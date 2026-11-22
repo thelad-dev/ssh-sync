@@ -1,5 +1,5 @@
 # Digests pinned (linux/amd64). Update when rebasing images.
-FROM golang:1.27-bookworm@sha256:fb7cceb528b47141eccd9b60bf3cbd27d5ef5f8cf5b7d338bec866da495b50dc AS build
+FROM golang:1.26-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0 AS build
 WORKDIR /src
 ARG AGENT_VERSION=0.1.0
 COPY go.mod go.sum ./
@@ -26,7 +26,7 @@ WORKDIR /app
 COPY --from=build /out/ssh-sync-api /usr/local/bin/ssh-sync-api
 COPY web /app/web
 COPY --from=build /out/downloads /app/downloads
-RUN mkdir -p /app/data && chown -R sshsync:sshsync /app
+RUN mkdir -p /app/data && chmod 0700 /app/data && chown -R sshsync:sshsync /app
 ENV SSH_SYNC_JWT_SECRET=""
 EXPOSE 8080
 VOLUME ["/app/data"]

@@ -6,6 +6,7 @@ import (
 	"github.com/thelad-dev/ssh-sync/internal/agentconfig"
 	"github.com/thelad-dev/ssh-sync/internal/client"
 	"github.com/thelad-dev/ssh-sync/internal/crypto"
+	"github.com/thelad-dev/ssh-sync/internal/releaseverify"
 	"github.com/thelad-dev/ssh-sync/internal/sshconfig"
 )
 
@@ -18,6 +19,9 @@ type PullResult struct {
 }
 
 func Pull(cfg *agentconfig.Config, master string) (*PullResult, error) {
+	if err := releaseverify.CheckServerURL(cfg.ServerURL, false); err != nil {
+		return nil, err
+	}
 	api := client.New(cfg.ServerURL, cfg.JWT)
 	api.AccessClientID = cfg.AccessClientID
 	api.AccessClientSecret = cfg.AccessClientSecret

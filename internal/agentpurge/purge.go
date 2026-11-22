@@ -66,7 +66,7 @@ func Execute(opts Options) error {
 		if err := wipeManagedOnly(sshDir); err != nil {
 			return err
 		}
-	} else if err := wipeSSHDir(sshDir); err != nil {
+	} else if err := WipeSSHDir(sshDir); err != nil {
 		return err
 	}
 
@@ -83,7 +83,9 @@ func Execute(opts Options) error {
 	return nil
 }
 
-func wipeSSHDir(sshDir string) error {
+// WipeSSHDir entfernt alles unter sshDir ausser authorized_keys / known_hosts.
+// Kein Backup der verwalteten Keys — fuer Portal-Abgeben vor dem completed-Ack.
+func WipeSSHDir(sshDir string) error {
 	entries, err := os.ReadDir(sshDir)
 	if err != nil {
 		if os.IsNotExist(err) {

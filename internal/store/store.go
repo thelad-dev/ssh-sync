@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +16,12 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	_ = os.Chmod(dir, 0o700)
+
 	db, err := sql.Open("sqlite3", path+"?_foreign_keys=on&_journal_mode=WAL")
 	if err != nil {
 		return nil, err
@@ -23,7 +31,30 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := tightenDBFiles(path); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return s, nil
+}
+
+func tightenDBFiles(path string) error {
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Stat(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if info.IsDir() {
+			continue
+		}
+		if err := os.Chmod(p, 0o600); err != nil {
+			return fmt.Errorf("chmod %s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error {

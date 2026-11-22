@@ -23,5 +23,8 @@ if (!appSrc.includes('deriveKeys') || !appSrc.includes('bytesToHex(cryptoKeys.au
 if (appSrc.includes('api.setup(password)')) {
   throw new Error('app.js darf setup(password) nicht mehr aufrufen');
 }
+if (!/konto ist noch legacy/i.test(appSrc)) {
+  throw new Error('app.js darf loginLegacy nur nach Legacy-Antwort des Servers aufrufen');
+}
 
 console.log('auth_no_password_test.mjs: OK');

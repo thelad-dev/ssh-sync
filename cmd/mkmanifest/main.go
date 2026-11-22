@@ -35,7 +35,8 @@ const manifestName = "manifest.json"
 //      sourceRepositoryURI:      https://github.com/thelad-dev/ssh-sync
 //      sourceRepositoryOwnerURI: https://github.com/thelad-dev
 
-var binaryNameRE = regexp.MustCompile(`^ssh-sync-(linux|darwin|windows)-(amd64|arm64)(\.exe)?$`)
+// Windows-Zip liegt neben der .exe im Release und muss denselben Manifest-Digest tragen.
+var binaryNameRE = regexp.MustCompile(`^ssh-sync-(linux|darwin|windows)-(amd64|arm64)(\.exe|\.zip)?$`)
 
 type artifact struct {
 	Platform string `json:"platform"`
@@ -149,7 +150,11 @@ func platformFromFilename(name string) (string, error) {
 	if m == nil {
 		return "", fmt.Errorf("kein Plattform-Binary: %s", name)
 	}
-	return m[1] + "-" + m[2], nil
+	osName, arch, suffix := m[1], m[2], m[3]
+	if suffix == ".zip" && osName != "windows" {
+		return "", fmt.Errorf("kein Plattform-Binary: %s", name)
+	}
+	return osName + "-" + arch, nil
 }
 
 func fileSHA256(path string) (string, error) {

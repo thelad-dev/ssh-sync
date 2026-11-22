@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/thelad-dev/ssh-sync/internal/api"
@@ -21,9 +22,14 @@ func main() {
 	downloadsDir := flag.String("downloads", "", "Agent-Binaries (Standard: ../downloads oder /app/downloads)")
 	flag.Parse()
 
-	if err := os.MkdirAll(filepath.Dir(*dbPath), 0o755); err != nil {
+	// Besitzer-only fuer neu angelegte DB- und Sidecar-Dateien.
+	syscall.Umask(0o077)
+
+	dbDir := filepath.Dir(*dbPath)
+	if err := os.MkdirAll(dbDir, 0o700); err != nil {
 		log.Fatal(err)
 	}
+	_ = os.Chmod(dbDir, 0o700)
 
 	st, err := store.Open(*dbPath)
 	if err != nil {

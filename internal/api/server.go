@@ -272,7 +272,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "auth_key ungueltig")
 			return
 		}
-		if scheme != store.AuthSchemeV1 || !auth.CheckPassword(user.PasswordHash, hex.EncodeToString(authKey)) {
+		if scheme != store.AuthSchemeV1 {
+			// Client darf das Master-Passwort nur senden, wenn der Server legacy meldet.
+			writeJSON(w, http.StatusUnauthorized, map[string]string{
+				"error":       "konto ist noch legacy",
+				"auth_scheme": store.AuthSchemeLegacy,
+			})
+			return
+		}
+		if !auth.CheckPassword(user.PasswordHash, hex.EncodeToString(authKey)) {
 			writeError(w, http.StatusUnauthorized, "falscher auth_key")
 			return
 		}
@@ -455,6 +463,10 @@ func (s *Server) handlePutIdentity(w http.ResponseWriter, r *http.Request) {
 	var req identityRequest
 	if err := readJSON(r, &req); err != nil || req.Name == "" || req.EncryptedPrivateKey == "" {
 		writeError(w, http.StatusBadRequest, "name und encrypted_private_key erforderlich")
+		return
+	}
+	if err := sshconfig.ValidateKeyBasename(req.Name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	now := time.Now()

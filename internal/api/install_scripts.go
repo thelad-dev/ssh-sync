@@ -209,7 +209,8 @@ curl_fetch() {
 }
 
 hash_from_manifest() {
-  # Unterstuetzt {"assets":{"name":"hex"}} und {"assets":[{"filename":"name","sha256":"hex"},...]}
+  # Unterstuetzt {"assets":{"name":"hex"}} und eingerueckte artifacts/assets-Arrays
+  # mit "filename" und "sha256" auf getrennten Zeilen (mkmanifest).
   asset="$1"
   man="$2"
   h="$(sed -n "s/.*\"${asset}\"[[:space:]]*:[[:space:]]*\"\\([0-9a-fA-F]\\{64\\}\\)\".*/\\1/p" "$man" | tr 'A-F' 'a-f' | head -n1)"
@@ -218,17 +219,21 @@ hash_from_manifest() {
     return 0
   fi
   h="$(awk -v a="$asset" '
-    BEGIN { IGNORECASE=0 }
     {
-      line=$0
-      if (index(line, a) == 0) next
-      if (match(line, /"sha256"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]{64}"/)) {
-        s = substr(line, RSTART, RLENGTH)
+      if (match($0, /"filename"[[:space:]]*:[[:space:]]*"[^"]+"/)) {
+        fn = substr($0, RSTART, RLENGTH)
+        sub(/^.*"filename"[[:space:]]*:[[:space:]]*"/, "", fn)
+        sub(/".*$/, "", fn)
+        if (fn == a) { want = 1; next }
+      }
+      if (want && match($0, /"sha256"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]{64}"/)) {
+        s = substr($0, RSTART, RLENGTH)
         sub(/^.*"sha256"[[:space:]]*:[[:space:]]*"/, "", s)
         sub(/".*$/, "", s)
         print tolower(s)
         exit
       }
+      if (want && /\{/) want = 0
     }
   ' "$man")"
   printf '%%s' "$h"
@@ -285,10 +290,7 @@ if command -v cosign >/dev/null 2>&1; then
   fi
   WANT_HASH="$(hash_from_manifest "$ASSET" "$MANIFEST")"
   if [ -z "$WANT_HASH" ]; then
-    WANT_HASH="$(hash_from_sums "$ASSET" "$SUMS")"
-  fi
-  if [ -z "$WANT_HASH" ]; then
-    echo "Hash fuer $ASSET fehlt in Manifest und SHA256SUMS" >&2
+    echo "Hash fuer $ASSET fehlt im signierten Manifest" >&2
     exit 1
   fi
   GOT_HASH="$(file_sha256 "$BIN")"
@@ -471,8 +473,7 @@ if ($null -ne $cosign) {
   & cosign verify-blob --bundle $Bundle --certificate-identity-regexp $CosignIdentityRegexp --certificate-oidc-issuer $CosignOidcIssuer $Manifest
   if ($LASTEXITCODE -ne 0) { throw "Sigstore-Verifikation fehlgeschlagen" }
   $want = Get-HashFromManifest $Asset $Manifest
-  if (-not $want) { $want = Get-HashFromSums $Asset $Sums }
-  if (-not $want) { throw "Hash fuer $Asset fehlt in Manifest und SHA256SUMS" }
+  if (-not $want) { throw "Hash fuer $Asset fehlt im signierten Manifest" }
   $got = Get-FileSha256 $ZipPath
   if ($got -ne $want) { throw "SHA-256 stimmt nicht (got $got want $want)" }
 } elseif ($UnsicherNurPruefsumme) {
