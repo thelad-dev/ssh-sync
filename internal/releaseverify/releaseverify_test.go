@@ -1,8 +1,6 @@
 package releaseverify
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -59,15 +57,7 @@ func TestSanitizeInstallBaseURL(t *testing.T) {
 	}
 }
 
-func TestSignAndVerifyManifest(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := PublicKey
-	PublicKey = pub
-	t.Cleanup(func() { PublicKey = old })
-
+func TestParseManifestAndAssetHash(t *testing.T) {
 	dir := t.TempDir()
 	asset := filepath.Join(dir, "ssh-sync-linux-amd64")
 	payload := make([]byte, 2048)
@@ -78,28 +68,18 @@ func TestSignAndVerifyManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(payload)
-	m := Manifest{
-		Version: "1.2.3",
-		Assets:  map[string]string{"ssh-sync-linux-amd64": hex.EncodeToString(sum[:])},
-	}
-	canon, sig, err := SignManifest(m, priv)
+	raw := sampleManifest("1.2.3", "ssh-sync-linux-amd64", hex.EncodeToString(sum[:]), int64(len(payload)))
+	m, err := ParseManifest(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := VerifySignature(canon, sig)
-	if err != nil {
+	if err := VerifyAssetHash(m, "ssh-sync-linux-amd64", asset); err != nil {
 		t.Fatal(err)
 	}
-	if got.Version != "1.2.3" {
-		t.Fatalf("version %s", got.Version)
-	}
-	if err := VerifyAssetHash(got, "ssh-sync-linux-amd64", asset); err != nil {
-		t.Fatal(err)
-	}
+}
 
-	badSig := append([]byte{}, sig...)
-	badSig[0] ^= 0xff
-	if _, err := VerifySignature(canon, badSig); err == nil {
-		t.Fatal("bad signature accepted")
+func TestPublicKeyPEMRemoved(t *testing.T) {
+	if _, err := PublicKeyPEM(); err == nil {
+		t.Fatal("expected error without Ed25519 key")
 	}
 }

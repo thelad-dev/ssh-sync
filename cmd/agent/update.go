@@ -18,6 +18,7 @@ func runUpdate(cfgPath string, args []string) {
 	dest := fs.String("dest", "", "Zielpfad (Standard: aktuelles ssh-sync Binary)")
 	noRestart := fs.Bool("no-restart", false, "Daemon/Scheduled Task nicht neu starten")
 	insecure := fs.Bool("insecure", false, "http:// ausserhalb Loopback erlauben (unsicher)")
+	allowDowngrade := fs.Bool("allow-downgrade", false, "auch gleiche oder aeltere Manifest-Version erlauben")
 	accessID := fs.String("access-client-id", "", "Cloudflare Access Service Token ID")
 	accessSecret := fs.String("access-client-secret", "", "Cloudflare Access Service Token Secret")
 	_ = fs.Parse(args)
@@ -51,6 +52,7 @@ func runUpdate(cfgPath string, args []string) {
 		AccessClientSecret: api.AccessClientSecret,
 		DestPath:           *dest,
 		Insecure:           *insecure,
+		AllowDowngrade:     *allowDowngrade,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Update fehlgeschlagen: %v\n", err)

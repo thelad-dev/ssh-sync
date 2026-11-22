@@ -14,7 +14,7 @@ import (
 	"github.com/thelad-dev/ssh-sync/internal/version"
 )
 
-// AssetName liefert den Download-Dateinamen für die aktuelle Plattform.
+// AssetName liefert den Download-Dateinamen fuer die aktuelle Plattform.
 func AssetName() (string, error) {
 	switch runtime.GOOS {
 	case "linux":
@@ -36,7 +36,7 @@ func AssetName() (string, error) {
 			return "ssh-sync-darwin-arm64", nil
 		}
 	}
-	return "", fmt.Errorf("kein Binary für %s/%s", runtime.GOOS, runtime.GOARCH)
+	return "", fmt.Errorf("kein Binary fuer %s/%s", runtime.GOOS, runtime.GOARCH)
 }
 
 type Options struct {
@@ -45,15 +45,18 @@ type Options struct {
 	AccessClientSecret string
 	DestPath           string // leer = aktuelles Executable
 	Insecure           bool   // erlaubt http:// ausserhalb Loopback
+	AllowDowngrade     bool
 	CurrentVersion     string // leer = version.Agent
 	HTTPClient         *http.Client
+	// VerifyManifest overrides Sigstore verification (tests only).
+	VerifyManifest func(manifestBytes, bundleBytes []byte, currentVersion string, allowDowngrade bool) (*releaseverify.Manifest, error)
 }
 
 type Result struct {
-	Asset    string
-	DestPath string
-	Bytes    int64
-	Version  string
+	Asset      string
+	DestPath   string
+	Bytes      int64
+	Version    string
 	RolledBack bool
 }
 
@@ -94,22 +97,23 @@ func Apply(opts Options) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("manifest: %w", err)
 	}
-	sigBytes, err := fetchBytes(client, opts, base+"/downloads/"+releaseverify.SigName)
+	bundleBytes, err := fetchBytes(client, opts, base+"/downloads/"+releaseverify.BundleName)
 	if err != nil {
-		return nil, fmt.Errorf("manifest.sig: %w", err)
+		return nil, fmt.Errorf("%s: %w", releaseverify.BundleName, err)
 	}
 
-	manifest, err := releaseverify.VerifySignature(manifestBytes, sigBytes)
+	verifyFn := opts.VerifyManifest
+	if verifyFn == nil {
+		verifyFn = func(manifestBytes, bundleBytes []byte, currentVersion string, allowDowngrade bool) (*releaseverify.Manifest, error) {
+			return releaseverify.VerifyManifestBundle(manifestBytes, bundleBytes, releaseverify.VerifyOpts{
+				CurrentVersion: currentVersion,
+				AllowDowngrade: allowDowngrade,
+			})
+		}
+	}
+	manifest, err := verifyFn(manifestBytes, bundleBytes, cur, opts.AllowDowngrade)
 	if err != nil {
 		return nil, err
-	}
-
-	cmp, err := releaseverify.CompareVersions(manifest.Version, cur)
-	if err != nil {
-		return nil, err
-	}
-	if cmp <= 0 {
-		return nil, fmt.Errorf("kein neueres Release (manifest %s, lokal %s)", manifest.Version, cur)
 	}
 
 	destDir := filepath.Dir(dest)
@@ -142,11 +146,11 @@ func Apply(opts Options) (*Result, error) {
 		return nil, err
 	}
 
-	// Nach dem Ersetzen Hash der Zieldatei erneut prüfen; bei Fehler Rollback.
+	// Nach dem Ersetzen Hash der Zieldatei erneut pruefen; bei Fehler Rollback.
 	if err := releaseverify.VerifyAssetHash(manifest, asset, dest); err != nil {
 		if backup != "" {
 			_ = restoreBackup(dest, backup)
-			return &Result{Asset: asset, DestPath: dest, Bytes: info.Size(), Version: manifest.Version, RolledBack: true}, fmt.Errorf("Nachprüfung fehlgeschlagen, Rollback: %w", err)
+			return &Result{Asset: asset, DestPath: dest, Bytes: info.Size(), Version: manifest.Version, RolledBack: true}, fmt.Errorf("Nachpruefung fehlgeschlagen, Rollback: %w", err)
 		}
 		return nil, err
 	}

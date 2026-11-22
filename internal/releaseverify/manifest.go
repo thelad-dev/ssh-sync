@@ -1,83 +1,36 @@
 package releaseverify
 
 import (
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 )
 
 const (
 	ManifestName = "manifest.json"
-	SigName      = "manifest.sig"
+	BundleName   = "manifest.json.sigstore.json"
 )
 
-// Manifest describes signed release assets.
+// Manifest describes signed release assets (Sigstore-signed as raw JSON bytes).
 type Manifest struct {
-	Version string            `json:"version"`
-	Assets  map[string]string `json:"assets"` // name -> sha256 hex
+	Version    string          `json:"version"`
+	MinVersion string          `json:"min_version,omitempty"`
+	Timestamp  string          `json:"timestamp,omitempty"`
+	Assets     []ManifestAsset `json:"assets"`
 }
 
-// CanonicalJSON returns a stable JSON encoding for signing.
-func (m Manifest) CanonicalJSON() ([]byte, error) {
-	if m.Assets == nil {
-		m.Assets = map[string]string{}
-	}
-	names := make([]string, 0, len(m.Assets))
-	for k := range m.Assets {
-		names = append(names, k)
-	}
-	sort.Strings(names)
-	type pair struct {
-		Name string `json:"name"`
-		Hash string `json:"sha256"`
-	}
-	// Stable object: version + sorted assets object via json.Marshal on ordered struct.
-	ordered := struct {
-		Version string            `json:"version"`
-		Assets  map[string]string `json:"assets"`
-	}{
-		Version: m.Version,
-		Assets:  make(map[string]string, len(names)),
-	}
-	for _, n := range names {
-		ordered.Assets[n] = strings.ToLower(strings.TrimSpace(m.Assets[n]))
-	}
-	// encoding/json maps are sorted by key since Go 1.x deterministic for maps? Actually Go randomizes map order.
-	// Build manually for stability.
-	var b strings.Builder
-	b.WriteString(`{"assets":{`)
-	for i, n := range names {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		kj, err := json.Marshal(n)
-		if err != nil {
-			return nil, err
-		}
-		vj, err := json.Marshal(ordered.Assets[n])
-		if err != nil {
-			return nil, err
-		}
-		b.Write(kj)
-		b.WriteByte(':')
-		b.Write(vj)
-	}
-	b.WriteString(`},"version":`)
-	vj, err := json.Marshal(m.Version)
-	if err != nil {
-		return nil, err
-	}
-	b.Write(vj)
-	b.WriteByte('}')
-	return []byte(b.String()), nil
+// ManifestAsset is one platform binary listed in the release manifest.
+type ManifestAsset struct {
+	Platform string `json:"platform"`
+	Filename string `json:"filename"`
+	SHA256   string `json:"sha256"`
+	Size     int64  `json:"size"`
 }
 
-// ParseManifest parses manifest JSON (any key order).
+// ParseManifest parses manifest JSON.
 func ParseManifest(data []byte) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
@@ -89,53 +42,38 @@ func ParseManifest(data []byte) (*Manifest, error) {
 	if len(m.Assets) == 0 {
 		return nil, fmt.Errorf("manifest: assets fehlen")
 	}
-	for name, hash := range m.Assets {
-		h := strings.ToLower(strings.TrimSpace(hash))
+	for i := range m.Assets {
+		a := &m.Assets[i]
+		a.Filename = strings.TrimSpace(a.Filename)
+		if a.Filename == "" {
+			return nil, fmt.Errorf("manifest: filename fehlt")
+		}
+		h := strings.ToLower(strings.TrimSpace(a.SHA256))
 		if len(h) != 64 {
-			return nil, fmt.Errorf("manifest: ungültiger Hash für %s", name)
+			return nil, fmt.Errorf("manifest: ungueltiger Hash fuer %s", a.Filename)
 		}
 		if _, err := hex.DecodeString(h); err != nil {
-			return nil, fmt.Errorf("manifest: ungültiger Hash für %s", name)
+			return nil, fmt.Errorf("manifest: ungueltiger Hash fuer %s", a.Filename)
 		}
-		m.Assets[name] = h
+		a.SHA256 = h
+		if a.Size < 0 {
+			return nil, fmt.Errorf("manifest: ungueltige Groesse fuer %s", a.Filename)
+		}
 	}
 	return &m, nil
 }
 
-// SignManifest signs the canonical manifest with the private key.
-func SignManifest(m Manifest, privateKey ed25519.PrivateKey) ([]byte, []byte, error) {
-	if len(privateKey) != ed25519.PrivateKeySize {
-		return nil, nil, fmt.Errorf("ungültiger Private Key")
+// AssetByFilename returns the asset entry for name.
+func (m *Manifest) AssetByFilename(name string) (*ManifestAsset, bool) {
+	if m == nil {
+		return nil, false
 	}
-	canon, err := m.CanonicalJSON()
-	if err != nil {
-		return nil, nil, err
+	for i := range m.Assets {
+		if m.Assets[i].Filename == name {
+			return &m.Assets[i], true
+		}
 	}
-	sig := ed25519.Sign(privateKey, canon)
-	return canon, sig, nil
-}
-
-// VerifySignature checks sig over raw manifest bytes using the embedded/public key.
-// It re-parses and re-canonicalizes so key order in the file does not matter.
-func VerifySignature(manifestBytes, sig []byte) (*Manifest, error) {
-	if len(PublicKey) != 32 {
-		return nil, fmt.Errorf("kein Release-Public-Key eingebettet (siehe docs/release-signing.md)")
-	}
-	if len(sig) != ed25519.SignatureSize {
-		return nil, fmt.Errorf("Signatur hat ungültige Länge (%d)", len(sig))
-	}
-	m, err := ParseManifest(manifestBytes)
-	if err != nil {
-		return nil, err
-	}
-	canon, err := m.CanonicalJSON()
-	if err != nil {
-		return nil, err
-	}
-	if !ed25519.Verify(PublicKey, canon, sig) {
-		return nil, fmt.Errorf("Signatur ungültig")
-	}
-	return m, nil
+	return nil, false
 }
 
 // FileSHA256 returns the hex SHA-256 of path.
@@ -150,7 +88,7 @@ func FileSHA256(path string) (string, error) {
 
 // VerifyAssetHash checks the file against the manifest entry.
 func VerifyAssetHash(m *Manifest, assetName, path string) error {
-	want, ok := m.Assets[assetName]
+	want, ok := m.AssetByFilename(assetName)
 	if !ok {
 		return fmt.Errorf("Asset %q fehlt im Manifest", assetName)
 	}
@@ -158,8 +96,17 @@ func VerifyAssetHash(m *Manifest, assetName, path string) error {
 	if err != nil {
 		return err
 	}
-	if got != want {
-		return fmt.Errorf("SHA-256 stimmt nicht: got %s want %s", got, want)
+	if got != want.SHA256 {
+		return fmt.Errorf("SHA-256 stimmt nicht: got %s want %s", got, want.SHA256)
+	}
+	if want.Size > 0 {
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if info.Size() != want.Size {
+			return fmt.Errorf("Groesse stimmt nicht: got %d want %d", info.Size(), want.Size)
+		}
 	}
 	return nil
 }
