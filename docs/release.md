@@ -35,15 +35,14 @@ git tag -a v0.1.0 -m "ssh-sync v0.1.0"
 git push origin v0.1.0
 ```
 
-Der Workflow `release` baut Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64) mit `-trimpath` und `CGO_ENABLED=0`, erzeugt `SHA256SUMS`, signiert das Manifest, verifiziert die Signatur und legt einen **Entwurf** eines GitHub-Releases an (nicht veroeffentlicht). Zusaetzlich wird eine Build-Provenance-Attestierung erzeugt.
+Der Workflow `release` baut Linux (amd64, arm64), Windows (amd64), macOS (amd64, arm64) mit `-trimpath` und `CGO_ENABLED=0`, erzeugt `SHA256SUMS`, signiert das Manifest keyless mit Cosign/Sigstore, verifiziert das Bundle und legt einen **Entwurf** eines GitHub-Releases an (nicht veroeffentlicht). Die Herkunftsattestierung (`actions/attest-build-provenance`) laeuft nur, wenn das Repository oeffentlich ist; bei privaten Benutzer-Repos ueberspringt der Workflow diesen Schritt, weil die Attestations-API dort nicht verfuegbar ist. Cosign-Signatur und Draft-Release bleiben davon unabhaengig.
 
 ## 5. Entwurf pruefen
 
 Im GitHub-UI den Draft-Release oeffnen:
 
-- Alle Binaries, `SHA256SUMS`, `manifest.json`, `manifest.sig` vorhanden.
-- Fingerabdruck des Public Keys im Release-Text nennen bzw. mit der lokalen Notiz abgleichen.
-- Optional lokal: Assets laden und `go run ./cmd/signrelease -verify -dir <ordner>` gegen denselben eingebetteten Key.
+- Alle Binaries (fuenf Plattformen plus Windows-Zip), `SHA256SUMS`, `manifest.json`, `manifest.json.sigstore.json` vorhanden.
+- Optional lokal: Assets laden und das Sigstore-Bundle mit Cosign gegen die bekannte Workflow-Identitaet pruefen (siehe [release-signing.md](release-signing.md) bzw. `internal/releaseverify`).
 
 ## 6. Veroeffentlichen
 
