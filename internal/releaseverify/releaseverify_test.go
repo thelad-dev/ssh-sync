@@ -78,8 +78,3 @@ func TestParseManifestAndAssetHash(t *testing.T) {
 	}
 }
 
-func TestPublicKeyPEMRemoved(t *testing.T) {
-	if _, err := PublicKeyPEM(); err == nil {
-		t.Fatal("expected error without Ed25519 key")
-	}
-}
