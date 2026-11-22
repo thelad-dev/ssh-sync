@@ -62,8 +62,10 @@ func main() {
 	pubHex := hex.EncodeToString(pub)
 	fp := sha256.Sum256(pub)
 
+	fpFull := hex.EncodeToString(fp[:])
 	fmt.Printf("public_key_hex=%s\n", pubHex)
-	fmt.Printf("fingerprint_sha256=%s\n", hex.EncodeToString(fp[:]))
+	fmt.Printf("fingerprint_sha256=%s\n", fpFull)
+	fmt.Printf("fingerprint_short=%s\n", fpFull[:16])
 	fmt.Println()
 	fmt.Println("# Zeile fuer internal/releaseverify/release_ed25519.pub:")
 	fmt.Println(pubHex)

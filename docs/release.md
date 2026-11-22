@@ -1,6 +1,6 @@
 # Release-Ablauf
 
-Voraussetzungen: Schreibrecht am Repo, `gh` authentifiziert, Go laut `go.mod`.
+Voraussetzungen: Schreibrecht am Repo, `gh` authentifiziert. Fuer Builds und Signieren: Go laut `go.mod`. Fuer das einmalige Erzeugen des Release-Seeds reicht auch Docker oder OpenSSL 3 (siehe unten).
 
 ## 1. Schluessel erzeugen (einmalig, offline)
 
@@ -10,9 +10,18 @@ Auf einem vertrauenswuerdigen Rechner, nicht auf dem Produktivhost:
 ./scripts/gen-release-key.sh ~/ssh-sync-release.seed
 ```
 
-- Seed-Datei mit Rechten 0600 ausserhalb des Repos; zweite Kopie offline sichern.
+`scripts/gen-release-key.sh` waehlt automatisch:
+
+1. Lokales Go >= Version aus `go.mod` (`go run ./cmd/genreleasekey`)
+2. Sonst Docker-Image `golang:<go.mod>` (Repo read-only, Seed-Verzeichnis als eigener Mount, `--user` wie der Aufrufer)
+3. Sonst OpenSSL >= 3 (Ed25519 ohne Go, gleiches Seed-Dateiformat)
+4. Sonst Fehler mit diesen drei Moeglichkeiten
+
+Aeltere Go-Versionen (z. B. 1.19) sind kein Blocker, solange Docker oder OpenSSL 3 verfuegbar ist.
+
+- Seed-Datei mit Rechten 0600 ausserhalb des Repos; zweite Kopie offline sichern. Bestehende Datei wird nicht ueberschrieben.
 - Niemals committen, niemals in Logs drucken.
-- Ausgabe `public_key_hex` / Fingerabdruck notieren.
+- Ausgabe `public_key_hex`, `fingerprint_sha256` und `fingerprint_short` (erste 16 Hex-Zeichen) notieren.
 
 ## 2. Secret setzen
 

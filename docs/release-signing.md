@@ -9,7 +9,15 @@ Agent-Updates und Installer vertrauen nur einem **Ed25519**-Public-Key, der im B
 ./scripts/gen-release-key.sh ~/ssh-sync-release.seed
 ```
 
-Das Skript (via `cmd/genreleasekey`) schreibt den privaten Seed, gibt den oeffentlichen Schluessel als 64 Hex-Zeichen aus und druckt eine fertige Zeile fuer `internal/releaseverify/release_ed25519.pub` sowie den Befehl zum Setzen des Secrets.
+Das Skript schreibt den privaten Seed, gibt den oeffentlichen Schluessel als 64 Hex-Zeichen aus und druckt eine fertige Zeile fuer `internal/releaseverify/release_ed25519.pub` sowie Fingerabdruck und den Befehl zum Setzen des Secrets.
+
+Backend-Reihenfolge (kein passendes lokales Go noetig):
+
+1. Go laut `go.mod` lokal (`cmd/genreleasekey`)
+2. Docker `golang:<Version aus go.mod>`
+3. OpenSSL >= 3 (PKCS#8-Ed25519, gleiches Seed-Format wie `cmd/genreleasekey` / `cmd/signrelease`)
+
+Damit laeuft die Erzeugung auch auf Rechnern mit aelterem Go (z. B. 1.19), sofern Docker oder OpenSSL 3 vorhanden ist.
 
 ```bash
 # Public Key eintragen (eine Hex-Zeile, Kommentare erlaubt)
