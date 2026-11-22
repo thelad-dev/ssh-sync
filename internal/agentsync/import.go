@@ -7,6 +7,7 @@ import (
 	"github.com/thelad-dev/ssh-sync/internal/client"
 	"github.com/thelad-dev/ssh-sync/internal/crypto"
 	"github.com/thelad-dev/ssh-sync/internal/importlocal"
+	"github.com/thelad-dev/ssh-sync/internal/releaseverify"
 )
 
 // ImportResult beschreibt einen Upload von ~/.ssh zum Server.
@@ -21,6 +22,9 @@ type ImportResult struct {
 // ImportLocal liest ~/.ssh und laedt Config + Keys zum Server.
 // master bleibt lokal fuer die Verschluesselung; es geht kein Klartext-Passwort an den Server.
 func ImportLocal(cfg *agentconfig.Config, master string, skipExisting bool) (*ImportResult, error) {
+	if err := releaseverify.CheckServerURL(cfg.ServerURL, false); err != nil {
+		return nil, err
+	}
 	sshDir := cfg.ResolveSSHDir()
 	bundle, err := importlocal.LoadSSHDir(sshDir)
 	if err != nil {

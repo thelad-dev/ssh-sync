@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/thelad-dev/ssh-sync/internal/releaseverify"
 )
 
 type Config struct {
@@ -52,6 +54,13 @@ func migrateLegacyConfig(home, newPath string) error {
 			return nil
 		}
 		return err
+	}
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("legacy config %s: %w", oldPath, err)
+	}
+	if err := releaseverify.CheckServerURL(strings.TrimSpace(cfg.ServerURL), false); err != nil {
+		return fmt.Errorf("legacy config server_url: %w", err)
 	}
 	if err := os.WriteFile(newPath, data, 0o600); err != nil {
 		return err

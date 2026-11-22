@@ -110,6 +110,10 @@ func (s *Server) handleAgentImport(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "identity: ungültige id")
 			return
 		}
+		if err := sshconfig.ValidateKeyBasename(id.Name); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if existing, ok := existingByName[id.Name]; ok && req.SkipExisting {
 			if id.PublicKey != "" && existing.PublicKey != "" &&
 				!sshconfig.PublicKeysEqual(id.PublicKey, existing.PublicKey) {

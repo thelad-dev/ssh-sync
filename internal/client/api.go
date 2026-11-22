@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,30 @@ import (
 	"github.com/thelad-dev/ssh-sync/internal/accountexport"
 	"github.com/thelad-dev/ssh-sync/internal/store"
 )
+
+// APIError is a parsed non-2xx API response.
+type APIError struct {
+	Status     int
+	Message    string
+	AuthScheme string
+}
+
+func (e *APIError) Error() string {
+	status := fmt.Sprintf("%d %s", e.Status, http.StatusText(e.Status))
+	if e.Message != "" {
+		return status + ": " + e.Message
+	}
+	return status
+}
+
+// IsLegacyAuthRequired reports whether the server still expects a legacy password login.
+func IsLegacyAuthRequired(err error) bool {
+	var ae *APIError
+	if errors.As(err, &ae) {
+		return ae.AuthScheme == store.AuthSchemeLegacy
+	}
+	return false
+}
 
 type API struct {
 	BaseURL            string
@@ -453,12 +478,17 @@ func readAPIError(res *http.Response) error {
 		return fmt.Errorf("%s: Cloudflare Access Redirect — access_client_id/secret in config.json setzen", res.Status)
 	}
 	var parsed struct {
-		Error string `json:"error"`
+		Error      string `json:"error"`
+		AuthScheme string `json:"auth_scheme"`
 	}
-	if json.Unmarshal(body, &parsed) == nil && parsed.Error != "" {
-		return fmt.Errorf("%s: %s", res.Status, parsed.Error)
+	if json.Unmarshal(body, &parsed) == nil && (parsed.Error != "" || parsed.AuthScheme != "") {
+		msg := parsed.Error
+		if msg == "" {
+			msg = string(body)
+		}
+		return &APIError{Status: res.StatusCode, Message: msg, AuthScheme: parsed.AuthScheme}
 	}
-	return fmt.Errorf("%s: %s", res.Status, string(body))
+	return &APIError{Status: res.StatusCode, Message: string(body)}
 }
 
 func trimSlash(s string) string {

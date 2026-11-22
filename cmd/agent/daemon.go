@@ -12,9 +12,11 @@ import (
 
 	"github.com/thelad-dev/ssh-sync/internal/agentauth"
 	"github.com/thelad-dev/ssh-sync/internal/agentconfig"
+	"github.com/thelad-dev/ssh-sync/internal/agentpurge"
 	"github.com/thelad-dev/ssh-sync/internal/agentsync"
 	"github.com/thelad-dev/ssh-sync/internal/client"
 	"github.com/thelad-dev/ssh-sync/internal/keyring"
+	"github.com/thelad-dev/ssh-sync/internal/releaseverify"
 	"github.com/thelad-dev/ssh-sync/internal/store"
 )
 
@@ -77,6 +79,10 @@ func runDaemonUntil(cfg *agentconfig.Config, stop <-chan struct{}) {
 }
 
 func runDaemonLoop(cfg *agentconfig.Config) {
+	if err := releaseverify.CheckServerURL(cfg.ServerURL, false); err != nil {
+		log.Printf("server_url abgelehnt: %v", err)
+		return
+	}
 	api := newAgentAPI(cfg)
 	if err := api.DaemonPing(); err != nil {
 		log.Printf("ping fehlgeschlagen: %v", err)
@@ -169,12 +175,30 @@ func runImportCommand(api *client.API, cfg *agentconfig.Config, cmdID string) {
 }
 
 func runPurgeCommand(api *client.API, cmdID string) {
+	cfgPath, err := agentconfig.DefaultPath()
+	if err != nil {
+		_ = api.CompleteCommand(cmdID, store.StatusFailed, "config-Pfad: "+err.Error())
+		log.Printf("purge fehlgeschlagen: config-Pfad: %v", err)
+		return
+	}
+	cfg, err := agentconfig.Load(cfgPath)
+	if err != nil {
+		_ = api.CompleteCommand(cmdID, store.StatusFailed, err.Error())
+		log.Printf("purge fehlgeschlagen: %v", err)
+		return
+	}
+	// Vollwipe von ~/.ssh (ohne Backup) bevor completed gemeldet wird; JWT noch gueltig.
+	if err := agentpurge.WipeSSHDir(cfg.ResolveSSHDir()); err != nil {
+		_ = api.CompleteCommand(cmdID, store.StatusFailed, err.Error())
+		log.Printf("purge wipe fehlgeschlagen: %v", err)
+		return
+	}
 	if err := api.CompleteCommand(cmdID, store.StatusComplete, "Gerät abgegeben"); err != nil {
 		log.Printf("purge ack fehlgeschlagen: %v", err)
 		return
 	}
-	log.Printf("purge ack gesendet - starte lokale Bereinigung (nur verwaltete Eintraege)")
-	spawnPostAckPurge(true)
+	log.Printf("purge ack gesendet - starte lokale Bereinigung (Vollwipe, ohne managed-only)")
+	spawnPostAckPurge(false)
 }
 
 func newAgentAPI(cfg *agentconfig.Config) *client.API {

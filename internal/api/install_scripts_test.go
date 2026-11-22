@@ -319,3 +319,178 @@ func firstDiff(want, got string) string {
 	}
 	return "at " + strconv.Itoa(i) + "\nwant: " + want[start:endW] + "\ngot:  " + got[start:endG]
 }
+
+func TestLinuxInstallScriptCosignRejectsSHA256SUMSFallback(t *testing.T) {
+	// Manifest-Digest A, SHA256SUMS-Digest B (passend zur Binary): Cosign-Pfad muss A nutzen und scheitern.
+	payload := make([]byte, 2048)
+	for i := range payload {
+		payload[i] = byte('B')
+	}
+	sumB := sha256.Sum256(payload)
+	hashB := hex.EncodeToString(sumB[:])
+	hashA := strings.Repeat("a", 64)
+
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	binDir := filepath.Join(root, "bin")
+	installDir := filepath.Join(home, ".local", "bin")
+	assetDir := filepath.Join(root, "assets")
+	for _, d := range []string{binDir, assetDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Eingeruecktes mkmanifest-Format: filename und sha256 auf getrennten Zeilen.
+	manifest := `{
+  "version": "1.0.0",
+  "artifacts": [
+    {
+      "platform": "linux-amd64",
+      "filename": "ssh-sync-linux-amd64",
+      "sha256": "` + hashA + `",
+      "size": 2048
+    }
+  ]
+}
+`
+	sums := hashB + "  ssh-sync-linux-amd64\n"
+	for name, body := range map[string]string{
+		"manifest.json":               manifest,
+		"manifest.json.sigstore.json": `{"dummy":"bundle"}`,
+		"SHA256SUMS":                  sums,
+		"ssh-sync-linux-amd64":        string(payload),
+	} {
+		if err := os.WriteFile(filepath.Join(assetDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fakeCurl := filepath.Join(binDir, "curl")
+	curlScript := `#!/bin/sh
+dest=""
+url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) dest="$2"; shift 2 ;;
+    -H|--header|-fsSL) shift ;;
+    http*|https*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+if [ -z "$dest" ] || [ -z "$url" ]; then exit 1; fi
+name=$(basename "$url")
+src="` + assetDir + `/$name"
+cp "$src" "$dest"
+exit 0
+`
+	if err := os.WriteFile(fakeCurl, []byte(curlScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeCosign := filepath.Join(binDir, "cosign")
+	if err := os.WriteFile(fakeCosign, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeSystemctl := filepath.Join(binDir, "systemctl")
+	if err := os.WriteFile(fakeSystemctl, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	script := LinuxInstallScript("http://127.0.0.1:9")
+	scriptPath := filepath.Join(root, "install.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	pathEnv := binDir + ":/usr/bin:/bin"
+	if p := os.Getenv("PATH"); p != "" {
+		pathEnv = binDir + ":" + p
+	}
+	env := append(os.Environ(),
+		"PATH="+pathEnv,
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"INSTALL_DIR="+installDir,
+		"SSH_SYNC_RELEASE_URL=http://127.0.0.1:9/rel",
+		"SSH_SYNC_ALLOW_INSECURE=1",
+	)
+
+	cmd := exec.Command("sh", scriptPath)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("erwartet Abbruch bei Manifest-Digest A vs Binary B, got ok\n%s", out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "SHA-256 stimmt nicht") && !strings.Contains(got, "fehlt im signierten Manifest") {
+		t.Fatalf("erwartet Hash-Mismatch gegen Manifest, got:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(installDir, "ssh-sync")); err == nil {
+		t.Fatal("binary darf bei Digest-Mismatch nicht installiert werden")
+	}
+}
+
+func TestLinuxInstallScriptCosignRequiresManifestDigest(t *testing.T) {
+	payload := make([]byte, 2048)
+	for i := range payload {
+		payload[i] = byte('C')
+	}
+	sum := sha256.Sum256(payload)
+	hashHex := hex.EncodeToString(sum[:])
+
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	binDir := filepath.Join(root, "bin")
+	installDir := filepath.Join(home, ".local", "bin")
+	assetDir := filepath.Join(root, "assets")
+	for _, d := range []string{binDir, assetDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Manifest ohne Eintrag fuer das Asset; SHA256SUMS hat den passenden Hash.
+	manifest := `{"version":"1.0.0","artifacts":[{"platform":"linux-arm64","filename":"ssh-sync-linux-arm64","sha256":"` + hashHex + `","size":1}]}`
+	sums := hashHex + "  ssh-sync-linux-amd64\n"
+	for name, body := range map[string]string{
+		"manifest.json":               manifest,
+		"manifest.json.sigstore.json": `{}`,
+		"SHA256SUMS":                  sums,
+		"ssh-sync-linux-amd64":        string(payload),
+	} {
+		if err := os.WriteFile(filepath.Join(assetDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, body := range map[string]string{
+		"curl":      "#!/bin/sh\ndest=\"\"; url=\"\"; while [ $# -gt 0 ]; do case \"$1\" in -o) dest=\"$2\"; shift 2;; -H|--header|-fsSL) shift;; http*|https*) url=\"$1\"; shift;; *) shift;; esac; done; cp \"" + assetDir + "/$(basename \"$url\")\" \"$dest\"\n",
+		"cosign":    "#!/bin/sh\nexit 0\n",
+		"systemctl": "#!/bin/sh\nexit 1\n",
+	} {
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	scriptPath := filepath.Join(root, "install.sh")
+	if err := os.WriteFile(scriptPath, []byte(LinuxInstallScript("http://127.0.0.1:9")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pathEnv := binDir + ":/usr/bin:/bin"
+	if p := os.Getenv("PATH"); p != "" {
+		pathEnv = binDir + ":" + p
+	}
+	cmd := exec.Command("sh", scriptPath)
+	cmd.Env = append(os.Environ(),
+		"PATH="+pathEnv,
+		"HOME="+home,
+		"INSTALL_DIR="+installDir,
+		"SSH_SYNC_RELEASE_URL=http://127.0.0.1:9/rel",
+		"SSH_SYNC_ALLOW_INSECURE=1",
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("erwartet Abbruch ohne Manifest-Digest, got ok\n%s", out)
+	}
+	if !strings.Contains(string(out), "fehlt im signierten Manifest") {
+		t.Fatalf("erwartet Manifest-Fehler, got:\n%s", out)
+	}
+}

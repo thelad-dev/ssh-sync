@@ -143,8 +143,7 @@ if ($null -ne $cosign) {
   & cosign verify-blob --bundle $Bundle --certificate-identity-regexp $CosignIdentityRegexp --certificate-oidc-issuer $CosignOidcIssuer $Manifest
   if ($LASTEXITCODE -ne 0) { throw "Sigstore-Verifikation fehlgeschlagen" }
   $want = Get-HashFromManifest $Asset $Manifest
-  if (-not $want) { $want = Get-HashFromSums $Asset $Sums }
-  if (-not $want) { throw "Hash fuer $Asset fehlt in Manifest und SHA256SUMS" }
+  if (-not $want) { throw "Hash fuer $Asset fehlt im signierten Manifest" }
   $got = Get-FileSha256 $ZipPath
   if ($got -ne $want) { throw "SHA-256 stimmt nicht (got $got want $want)" }
 } elseif ($UnsicherNurPruefsumme) {

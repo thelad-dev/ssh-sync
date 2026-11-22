@@ -32,8 +32,12 @@ func TestPlatformFromFilename(t *testing.T) {
 	if _, err := platformFromFilename("SHA256SUMS"); err == nil {
 		t.Fatal("expected error for SHA256SUMS")
 	}
-	if _, err := platformFromFilename("ssh-sync-windows-amd64.zip"); err == nil {
-		t.Fatal("expected error for zip")
+	got, err := platformFromFilename("ssh-sync-windows-amd64.zip")
+	if err != nil {
+		t.Fatalf("zip must be listed: %v", err)
+	}
+	if got != "windows-amd64" {
+		t.Fatalf("zip platform=%q", got)
 	}
 }
 
@@ -66,14 +70,22 @@ func TestWriteManifest(t *testing.T) {
 	if got.Version != "1.2.3" || got.MinVersion != "1.0.0" || got.Timestamp != "2026-11-22T12:00:00Z" {
 		t.Fatalf("meta: %+v", got)
 	}
-	if len(got.Artifacts) != 1 {
-		t.Fatalf("artifacts: %d", len(got.Artifacts))
+	if len(got.Artifacts) != 2 {
+		t.Fatalf("artifacts: %d (linux binary + windows zip)", len(got.Artifacts))
 	}
 	sum := sha256.Sum256(body)
 	wantHash := hex.EncodeToString(sum[:])
-	a := got.Artifacts[0]
+	byName := map[string]artifact{}
+	for _, a := range got.Artifacts {
+		byName[a.Filename] = a
+	}
+	a := byName[name]
 	if a.Platform != "linux-amd64" || a.Filename != name || a.SHA256 != wantHash || a.Size != int64(len(body)) {
 		t.Fatalf("artifact: %+v", a)
+	}
+	z := byName["ssh-sync-windows-amd64.zip"]
+	if z.Platform != "windows-amd64" || z.Filename != "ssh-sync-windows-amd64.zip" {
+		t.Fatalf("zip artifact: %+v", z)
 	}
 }
 

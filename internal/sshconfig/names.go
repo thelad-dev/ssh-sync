@@ -1,9 +1,22 @@
 package sshconfig
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 )
+
+// reservedSSHBasenames may not be used as managed private-key filenames.
+var reservedSSHBasenames = map[string]struct{}{
+	"authorized_keys":  {},
+	"authorized_keys2": {},
+	"known_hosts":      {},
+	"known_hosts.old":  {},
+	"config":           {},
+	"config--bak":      {},
+	"rc":               {},
+	"environment":      {},
+}
 
 // NormalizeIdentityName wandelt Key-Dateinamen in einen stabilen Identity-Namen um.
 // id_rsa.pem → id_rsa, ~/.ssh/foo_id → foo
@@ -33,6 +46,18 @@ func NormalizeIdentityName(pathOrName string) string {
 // KeyFileBasename Dateiname unter ~/.ssh für einen synchronisierten Private Key.
 func KeyFileBasename(identityName string) string {
 	return sanitizeFilename(NormalizeIdentityName(identityName))
+}
+
+// ValidateKeyBasename rejects reserved SSH trust/config filenames after cleaning.
+func ValidateKeyBasename(identityName string) error {
+	base := KeyFileBasename(identityName)
+	normalized := NormalizeIdentityName(identityName)
+	for _, cand := range []string{base, normalized, filepath.Base(strings.TrimSpace(identityName))} {
+		if _, reserved := reservedSSHBasenames[strings.ToLower(cand)]; reserved {
+			return fmt.Errorf("identity-name %q belegt den reservierten SSH-Dateinamen %q", identityName, base)
+		}
+	}
+	return nil
 }
 
 // IdentityNameCandidates liefert mögliche Namen zum Abgleich eines IdentityFile-Pfads.

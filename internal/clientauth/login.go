@@ -10,8 +10,7 @@ import (
 )
 
 // PortalLogin meldet sich mit Auth-Key an und migriert Legacy-Konten bei Bedarf.
-// Das Master-Passwort verlaesst den Client nur noch im Legacy-Fallback und wird
-// danach durch auth_key ersetzt.
+// Das Master-Passwort verlaesst den Client nur, wenn der Server das Konto als legacy meldet.
 func PortalLogin(api *client.API, master string) (crypto.DerivedKeys, error) {
 	salt, err := api.KDFSalt()
 	if err != nil {
@@ -24,6 +23,9 @@ func PortalLogin(api *client.API, master string) (crypto.DerivedKeys, error) {
 	if err == nil {
 		api.Token = res.Token
 		return keys, nil
+	}
+	if !client.IsLegacyAuthRequired(err) {
+		return crypto.DerivedKeys{}, err
 	}
 
 	res, err = api.LoginLegacyPassword(master)

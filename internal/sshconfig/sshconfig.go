@@ -30,6 +30,12 @@ func Apply(sshDir string, bundle *store.SyncBundle, decryptedKeys map[string][]b
 		return nil, err
 	}
 
+	for _, id := range bundle.Identities {
+		if err := ValidateKeyBasename(id.Name); err != nil {
+			return nil, err
+		}
+	}
+
 	identityFiles := map[string]string{}
 	var keyPaths []string
 	for _, id := range bundle.Identities {
