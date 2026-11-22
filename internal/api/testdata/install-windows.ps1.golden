@@ -65,7 +65,7 @@ function Install-SshSyncWindowsService {
 $PortalUrl = if ($env:SSH_SYNC_URL) { $env:SSH_SYNC_URL } else { "https://portal.example" }
 $ReleaseBase = if ($env:SSH_SYNC_RELEASE_URL) { $env:SSH_SYNC_RELEASE_URL } else { "https://github.com/thelad-dev/ssh-sync/releases/latest/download" }
 $AllowInsecure = $env:SSH_SYNC_ALLOW_INSECURE -eq "1"
-# Identitaet: kanonisch internal/releaseverify/identity.go (nach Merge Worker V)
+# Identitaet: kanonisch internal/releaseverify/identity.go
 $CosignOidcIssuer = "https://token.actions.githubusercontent.com"
 $CosignIdentityRegexp = '^https://github\.com/thelad-dev/ssh-sync/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 $GithubRepo = "https://github.com/thelad-dev/ssh-sync"
