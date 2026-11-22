@@ -1,0 +1,107 @@
+openapi: 3.1.0
+info:
+  title: ssh-sync API
+  version: 0.1.0
+  description: Self-hosted SSH Key & Config Sync (clientseitige Verschluesselung; Auth-Schluessel getrennt vom Enc-Schluessel)
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+  /api/setup/status:
+    get:
+      summary: Setup-Status
+      responses:
+        '200':
+          description: initialized true/false
+  /api/setup:
+    post:
+      summary: Ersteinrichtung mit auth_key und kdf_salt (kein Klartext-Passwort)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [auth_key, kdf_salt]
+              properties:
+                auth_key:
+                  type: string
+                  description: Hex-kodierter Auth-Schluessel (32 Byte)
+                kdf_salt:
+                  type: string
+                  description: Hex-kodiertes Argon2id-Salt (16 Byte)
+      responses:
+        '201':
+          description: Token und KDF-Salt
+  /api/auth/login:
+    post:
+      summary: Login mit auth_key (oder legacy password fuer Migration)
+  /api/auth/upgrade:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Legacy-Konto auf auth_v1 und AAD-Ciphertexts anheben (password oder X-Setup-Token)
+  /api/auth/kdf-salt:
+    get:
+      summary: Argon2id-Salt fuer Client-Verschluesselung
+  /api/identities:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Identities auflisten
+  /api/identities/{id}:
+    put:
+      security: [{ bearerAuth: [] }]
+      summary: Identity speichern (verschluesselter Private Key)
+    delete:
+      security: [{ bearerAuth: [] }]
+      summary: Identity loeschen
+  /api/hosts:
+    get:
+      security: [{ bearerAuth: [] }]
+  /api/hosts/{id}:
+    put:
+      security: [{ bearerAuth: [] }]
+    delete:
+      security: [{ bearerAuth: [] }]
+  /api/account/export:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Kontodaten als Payload (Keys bleiben Ciphertext); Client siegelt mit HMAC
+  /api/account/import:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Konten-Payload importieren (merge|replace, dry_run); H2-Validierung serverseitig
+  /api/devices:
+    get:
+      security: [{ bearerAuth: [] }]
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Gerät registrieren
+  /api/devices/{id}:
+    delete:
+      security: [{ bearerAuth: [] }]
+  /api/devices/{id}/trigger-sync:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Sync-Befehl an Gerät senden
+  /api/devices/{id}/trigger-import:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Import-Befehl an Gerät senden
+  /api/devices/{id}/trigger-purge:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Gerät abgeben (Fern-Purge nur Syncer-verwaltete Einträge)
+  /api/sync:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Sync-Bundle für registriertes Gerät
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer

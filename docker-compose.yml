@@ -1,0 +1,17 @@
+services:
+  ssh-sync:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ssh-sync-data:/app/data
+    environment:
+      SSH_SYNC_JWT_SECRET: ${SSH_SYNC_JWT_SECRET:?SSH_SYNC_JWT_SECRET muss gesetzt sein}
+      SSH_SYNC_SETUP_TOKEN: ${SSH_SYNC_SETUP_TOKEN:-}
+      SSH_SYNC_PUBLIC_URL: ${SSH_SYNC_PUBLIC_URL:-}
+      SSH_SYNC_CF_ACCESS_CLIENT_ID: ${SSH_SYNC_CF_ACCESS_CLIENT_ID:-}
+      SSH_SYNC_CF_ACCESS_CLIENT_SECRET: ${SSH_SYNC_CF_ACCESS_CLIENT_SECRET:-}
+    restart: unless-stopped
+
+volumes:
+  ssh-sync-data:

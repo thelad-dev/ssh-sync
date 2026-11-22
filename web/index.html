@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ssh-sync</title>
+  <link rel="stylesheet" href="style.css?v=opensshpad1">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <h1>ssh-sync</h1>
+      <p class="tagline">Eine SSH-Config für alle Clients <span class="build-tag">e8f31ac</span></p>
+    </header>
+
+    <section id="view-setup" class="panel hidden">
+      <h2>Ersteinrichtung</h2>
+      <p>Master-Passwort bleibt lokal. Nur ein abgeleiteter Auth-Schluessel geht an den Server; Private Keys werden clientseitig verschluesselt. Das schuetzt bei Diebstahl der Datenbank, nicht gegen einen vollstaendig kompromittierten Serverprozess.</p>
+      <form id="setup-form">
+        <label for="setup-password">Master-Passwort <input type="password" id="setup-password" name="password" autocomplete="new-password" enterkeyhint="next" required minlength="12"></label>
+        <label for="setup-password-confirm">Bestätigen <input type="password" id="setup-password-confirm" name="password-confirm" autocomplete="new-password" enterkeyhint="done" required minlength="12"></label>
+        <button type="submit" id="btn-setup">Einrichtung abschließen</button>
+      </form>
+      <p id="setup-error" class="error hidden"></p>
+    </section>
+
+    <section id="view-login" class="panel hidden">
+      <h2>Anmelden</h2>
+      <form id="login-form">
+        <label for="login-password">Master-Passwort <input type="password" id="login-password" name="password" autocomplete="current-password" enterkeyhint="done" required></label>
+        <button type="submit" id="btn-login">Anmelden</button>
+      </form>
+      <p id="login-error" class="error hidden"></p>
+    </section>
+
+    <section id="view-app" class="panel hidden">
+      <nav class="tabs">
+        <button class="tab active" data-panel="hosts">SSH Config</button>
+        <button class="tab" data-panel="devices">Geräte</button>
+        <button id="btn-logout" class="tab logout">Abmelden</button>
+      </nav>
+
+      <div id="panel-hosts">
+        <div class="panel-head">
+          <h2>SSH Config</h2>
+          <span class="btn-group-inline">
+            <button type="button" id="btn-import" class="secondary">Import</button>
+            <button type="button" id="btn-account-export" class="secondary">Konto exportieren</button>
+            <button type="button" id="btn-account-import" class="secondary">Konto importieren</button>
+            <button type="button" id="btn-keygen" class="secondary">+ Key</button>
+            <button type="button" id="btn-sync-all-hosts">Jetzt syncen</button>
+            <button type="button" id="btn-add-host">+ Host</button>
+          </span>
+        </div>
+        <p class="muted">Portal = Wahrheit. <strong>Import</strong> hoch, <strong>Sync</strong> runter (~30s). Beim ersten Sync: lokale <code>config</code> → <code>config--bak</code>, danach nur noch der Syncer-Block.</p>
+        <label class="host-search">
+          Suchen (Alias oder Ziel)
+          <input type="search" id="host-search" placeholder="web, 10.0.0, user@" autocomplete="off">
+        </label>
+        <p id="host-search-status" class="muted"></p>
+        <details class="list-section" id="hosts-section">
+          <summary>Hosts (<span id="host-list-count">0</span>)</summary>
+          <div id="host-list" class="list host-config-list"></div>
+        </details>
+        <details class="list-section" id="keys-section">
+          <summary>Keys (<span id="key-count">0</span>)</summary>
+          <div id="identity-list" class="list compact-list"></div>
+        </details>
+        <details class="list-section" id="preview-section">
+          <summary>Vorschau</summary>
+          <pre id="config-preview" class="install-cmd mono"></pre>
+        </details>
+        <p id="sync-all-status" class="muted"></p>
+      </div>
+
+      <div id="panel-devices" class="hidden">
+        <div class="panel-head">
+          <h2>Geräte</h2>
+          <span class="btn-group-inline">
+            <button type="button" id="btn-import-all-devices" class="secondary">Von allen importieren</button>
+            <button id="btn-add-device">+ Gerät</button>
+          </span>
+        </div>
+        <p class="muted">Status = Agent-Dienst (Ping alle ~30s), nicht ob der PC an ist. „Importieren“ braucht <code>ssh-sync unlock</code>. <strong>Abgeben</strong> = Gerät vollständig purgen (nicht ×). Konflikte beim letzten Befehl.</p>
+
+        <details class="card">
+          <summary>Installation (Linux / Windows)</summary>
+          <pre id="install-linux" class="install-cmd"></pre>
+          <pre id="install-windows" class="install-cmd"></pre>
+          <pre id="install-post" class="install-cmd"></pre>
+        </details>
+
+        <details class="card">
+          <summary>Cloudflare Service Token (optional)</summary>
+          <label>Client ID <input type="text" id="cf-access-id" autocomplete="off"></label>
+          <label>Client Secret <input type="password" id="cf-access-secret" autocomplete="off"></label>
+          <button type="button" id="btn-save-cf-bootstrap">Speichern</button>
+          <p id="cf-bootstrap-status" class="muted"></p>
+        </details>
+
+        <details class="list-section" id="devices-section">
+          <summary>Geräte (<span id="device-count">0</span>)</summary>
+          <div id="device-list" class="list"></div>
+        </details>
+      </div>
+    </section>
+
+    <dialog id="device-setup-dialog">
+      <h2 id="device-setup-title">Gerät eingerichtet</h2>
+      <label>
+        config.json
+        <textarea id="device-setup-config" class="setup-copy" rows="10" readonly></textarea>
+      </label>
+      <button type="button" class="secondary" id="btn-copy-device-config">Kopieren</button>
+      <label>
+        Befehle
+        <textarea id="device-setup-cmds" class="setup-copy" rows="5" readonly></textarea>
+      </label>
+      <button type="button" class="secondary" id="btn-copy-device-cmds">Kopieren</button>
+      <div class="dialog-actions">
+        <button type="button" id="btn-device-setup-close">Schließen</button>
+      </div>
+    </dialog>
+
+    <dialog id="import-dialog">
+      <form method="dialog" id="import-form">
+        <h2>Import aus ~/.ssh</h2>
+        <p class="muted">Config + Private Keys — verschlüsselt im Browser hochgeladen. Duplikat-Aliase werden übersprungen.</p>
+        <label class="file-label">
+          SSH config
+          <input type="file" id="import-config-file" accept=".config,text/plain">
+        </label>
+        <label>
+          oder einfügen
+          <textarea id="import-config-text" rows="5" placeholder="Host web&#10;  HostName 10.0.0.10&#10;  User deploy"></textarea>
+        </label>
+        <label class="file-label">
+          Private Keys
+          <input type="file" id="import-key-files" multiple>
+        </label>
+        <div id="import-preview" class="import-preview muted"></div>
+        <p id="import-error" class="error hidden"></p>
+        <div class="dialog-actions">
+          <button type="button" id="btn-import-preview">Vorschau</button>
+          <button type="submit" value="import">Import</button>
+          <button type="submit" value="cancel">Abbrechen</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="account-migrate-dialog">
+      <form method="dialog" id="account-migrate-form">
+        <h2 id="account-migrate-title">Konto umziehen</h2>
+        <p class="muted">Export/Import der Gesamtdaten. Private Keys bleiben verschluesselt; Geraete-Token nicht enthalten. Master-Passwort bleibt lokal.</p>
+        <div id="account-export-panel" class="hidden">
+          <p>Archiv herunterladen (HMAC mit Master-Passwort).</p>
+        </div>
+        <div id="account-import-panel" class="hidden">
+          <label class="file-label">
+            Archiv-Datei
+            <input type="file" id="account-import-file" accept="application/json,.json">
+          </label>
+          <label>
+            Konfliktmodus
+            <select id="account-import-mode">
+              <option value="merge">Zusammenfuehren (bestehende behalten)</option>
+              <option value="replace">Ersetzen (Ziel leeren, dann schreiben)</option>
+            </select>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="account-import-dry-run" checked>
+            Trockenlauf (nur Bericht)
+          </label>
+        </div>
+        <pre id="account-migrate-report" class="install-cmd mono hidden"></pre>
+        <p id="account-migrate-error" class="error hidden"></p>
+        <div class="dialog-actions">
+          <button type="submit" id="account-migrate-submit" value="run">Ausfuehren</button>
+          <button type="submit" value="cancel">Schliessen</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="host-dialog">
+      <form method="dialog" id="host-form">
+        <h2 id="host-dialog-title">Host bearbeiten</h2>
+        <label>
+          Alias (ssh-Name)
+          <input type="text" id="host-alias" placeholder="web" autocomplete="off" required>
+        </label>
+        <label>
+          HostName (DNS/IP)
+          <input type="text" id="host-hostname" placeholder="host.example.com" autocomplete="off" required>
+        </label>
+        <div class="host-form-row">
+          <label>
+            User
+            <input type="text" id="host-user" placeholder="optional" autocomplete="off">
+          </label>
+          <label>
+            Port
+            <input type="number" id="host-port" min="1" max="65535" value="22">
+          </label>
+        </div>
+        <label>
+          Identity (Key)
+          <select id="host-identity"></select>
+        </label>
+        <label>
+          ProxyJump
+          <input type="text" id="host-proxy-jump" placeholder="optional, z. B. bastion" autocomplete="off">
+        </label>
+        <label class="checkbox-label">
+          <input type="checkbox" id="host-identities-only">
+          IdentitiesOnly — nur den zugewiesenen Key nutzen, keine Agent-Keys
+        </label>
+        <label>
+          Extra (weitere ssh_config-Zeilen)
+          <textarea id="host-extra" rows="3" placeholder="z. B. ForwardAgent yes"></textarea>
+        </label>
+        <p id="host-error" class="error hidden"></p>
+        <div class="dialog-actions">
+          <button type="submit" value="save">Speichern</button>
+          <button type="submit" value="cancel">Abbrechen</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="keygen-dialog">
+      <form method="dialog" id="keygen-form">
+        <h2>SSH-Key erzeugen</h2>
+        <p class="muted">Ed25519 (wie <code>ssh-keygen -t ed25519</code>). Der Private Key wird verschlüsselt im Portal gespeichert und per Sync an alle Clients verteilt.</p>
+        <label>
+          Name (Dateiname unter ~/.ssh)
+          <input type="text" id="keygen-name" placeholder="deploy-github" autocomplete="off" required>
+        </label>
+        <label>
+          Kommentar
+          <input type="text" id="keygen-comment" placeholder="optional" autocomplete="off">
+        </label>
+        <div id="keygen-result" class="hidden">
+          <p class="ok">Key gespeichert — Public Key für <code>authorized_keys</code>:</p>
+          <textarea id="keygen-public" class="setup-copy mono" rows="3" readonly></textarea>
+          <button type="button" id="btn-copy-keygen-public" class="secondary">Public Key kopieren</button>
+          <p class="muted">Hosts im Portal diesem Key zuordnen, dann „Jetzt syncen“.</p>
+        </div>
+        <p id="keygen-error" class="error hidden"></p>
+        <div class="dialog-actions">
+          <button type="submit" value="create">Erzeugen &amp; hochladen</button>
+          <button type="submit" value="cancel">Schließen</button>
+        </div>
+      </form>
+    </dialog>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "@noble/curves/ed25519": "./vendor/noble-curves/esm/ed25519.js",
+      "@noble/hashes/sha512": "./vendor/noble-hashes/esm/sha512.js",
+      "@noble/hashes/utils": "./vendor/noble-hashes/esm/utils.js",
+      "@noble/hashes/crypto": "./vendor/noble-hashes/esm/crypto.js"
+    }
+  }
+  </script>
+  <script type="module" src="app.js?v=opensshpad1"></script>
+</body>
+</html>

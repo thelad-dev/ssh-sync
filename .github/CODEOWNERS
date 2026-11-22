@@ -1,0 +1,11 @@
+# Sicherheitskritische Pfade: Review durch Maintainer erzwingen (Branch-Schutz vorausgesetzt).
+* @thelad-dev
+
+/web/ @thelad-dev
+/internal/api/install_scripts.go @thelad-dev
+/internal/selfupdate/ @thelad-dev
+/internal/releaseverify/ @thelad-dev
+/go.mod @thelad-dev
+/go.sum @thelad-dev
+/Dockerfile @thelad-dev
+/.github/ @thelad-dev

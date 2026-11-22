@@ -1,0 +1,13 @@
+[Unit]
+Description=ssh-sync Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ssh-sync daemon
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
