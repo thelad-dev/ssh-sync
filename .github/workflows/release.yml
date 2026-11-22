@@ -5,13 +5,17 @@ on:
     tags:
       - 'v*.*.*'
 
-# Default: read-only. Sign and draft jobs raise permissions explicitly.
+# Default: read-only. Jobs raise permissions explicitly where needed.
 permissions:
   contents: read
 
 jobs:
   gate:
     runs-on: ubuntu-latest
+    # gh run list braucht actions:read; Top-Level contents:read allein liefert 403.
+    permissions:
+      contents: read
+      actions: read
     outputs:
       version: ${{ steps.meta.outputs.version }}
     steps:
@@ -27,17 +31,8 @@ jobs:
           set -euo pipefail
           TAG_SHA="$(git rev-list -n 1 "${GITHUB_REF}")"
           git fetch origin main
-          if ! git merge-base --is-ancestor "${TAG_SHA}" origin/main; then
-            echo "Tag-Commit ${TAG_SHA} liegt nicht auf origin/main" >&2
-            exit 1
-          fi
-          # CI-Workflow am getaggten Commit muss erfolgreich gewesen sein.
-          if ! gh run list --repo "${GITHUB_REPOSITORY}" --commit "${TAG_SHA}" --workflow ci.yml \
-            --json conclusion --jq 'any(.[]; .conclusion == "success")' | grep -qx true; then
-            echo "Kein erfolgreicher CI-Lauf fuer Commit ${TAG_SHA}" >&2
-            exit 1
-          fi
-          echo "Gate ok: ${TAG_SHA} auf main, CI gruen"
+          chmod +x scripts/check-release-gate.sh
+          ./scripts/check-release-gate.sh "${TAG_SHA}" "${GITHUB_REPOSITORY}"
 
       - name: Version from tag
         id: meta
