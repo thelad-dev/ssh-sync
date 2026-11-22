@@ -1,0 +1,164 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Tag must be on main and CI green
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG_SHA="$(git rev-list -n 1 "${GITHUB_REF}")"
+          git fetch origin main
+          if ! git merge-base --is-ancestor "${TAG_SHA}" origin/main; then
+            echo "Tag-Commit ${TAG_SHA} liegt nicht auf origin/main" >&2
+            exit 1
+          fi
+          # CI-Workflow am getaggten Commit muss erfolgreich gewesen sein.
+          if ! gh run list --repo "${GITHUB_REPOSITORY}" --commit "${TAG_SHA}" --workflow ci.yml \
+            --json conclusion --jq 'any(.[]; .conclusion == "success")' | grep -qx true; then
+            echo "Kein erfolgreicher CI-Lauf fuer Commit ${TAG_SHA}" >&2
+            exit 1
+          fi
+          echo "Gate ok: ${TAG_SHA} auf main, CI gruen"
+
+      - name: Version from tag
+        id: meta
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME}"
+          V="${V#v}"
+          echo "version=${V}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build agent binaries
+        env:
+          AGENT_VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          LDFLAGS="-s -w -X github.com/thelad-dev/ssh-sync/internal/version.Agent=${AGENT_VERSION}"
+          build() {
+            local goos="$1" goarch="$2" out="$3"
+            CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
+              go build -trimpath -ldflags "${LDFLAGS}" \
+              -o "dist/${out}" ./cmd/agent
+          }
+          build linux amd64 ssh-sync-linux-amd64
+          build linux arm64 ssh-sync-linux-arm64
+          build windows amd64 ssh-sync-windows-amd64.exe
+          build darwin amd64 ssh-sync-darwin-amd64
+          build darwin arm64 ssh-sync-darwin-arm64
+          ( cd dist && zip -j ssh-sync-windows-amd64.zip ssh-sync-windows-amd64.exe )
+          ( cd dist && sha256sum ssh-sync-linux-amd64 ssh-sync-linux-arm64 \
+              ssh-sync-windows-amd64.exe ssh-sync-windows-amd64.zip \
+              ssh-sync-darwin-amd64 ssh-sync-darwin-arm64 > SHA256SUMS )
+
+      - name: Upload dist
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: agent-dist
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: [gate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download dist
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: agent-dist
+          path: dist
+
+      - name: Build signrelease
+        run: CGO_ENABLED=0 go build -trimpath -o bin/signrelease ./cmd/signrelease
+
+      - name: Sign manifest
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          AGENT_VERSION: ${{ needs.gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_SIGNING_KEY:-}" ]; then
+            echo "Secret RELEASE_SIGNING_KEY fehlt" >&2
+            exit 1
+          fi
+          KEYFILE="$(mktemp)"
+          trap 'rm -f "${KEYFILE}"' EXIT
+          # Secret nur in die Datei schreiben, niemals echo/cat ins Log.
+          printf '%s\n' "${RELEASE_SIGNING_KEY}" > "${KEYFILE}"
+          chmod 600 "${KEYFILE}"
+          ./bin/signrelease -version "${AGENT_VERSION}" -dir dist -key "${KEYFILE}"
+          rm -f "${KEYFILE}"
+          trap - EXIT
+
+      - name: Verify signature with embedded public key
+        run: |
+          set -euo pipefail
+          ./bin/signrelease -verify -dir dist
+
+      - name: Draft GitHub Release
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/ssh-sync-linux-amd64
+            dist/ssh-sync-linux-arm64
+            dist/ssh-sync-windows-amd64.exe
+            dist/ssh-sync-windows-amd64.zip
+            dist/ssh-sync-darwin-amd64
+            dist/ssh-sync-darwin-arm64
+            dist/SHA256SUMS
+            dist/manifest.json
+            dist/manifest.sig
+          body: |
+            Entwurf: vor dem Veroeffentlichen Signatur, SHA256SUMS und Public-Key-Fingerabdruck pruefen.
+            Siehe docs/release.md.
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
+        with:
+          subject-checksums: dist/SHA256SUMS

@@ -18,3 +18,5 @@ config.json
 .master-key
 release.ed25519.*
 *.bak
+*.seed
+ssh-sync-release.seed
