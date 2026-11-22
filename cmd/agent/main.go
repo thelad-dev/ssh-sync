@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/thelad-dev/ssh-sync/internal/agentauth"
 	"github.com/thelad-dev/ssh-sync/internal/agentconfig"
 	"github.com/thelad-dev/ssh-sync/internal/agentsync"
 	"github.com/thelad-dev/ssh-sync/internal/client"
@@ -193,6 +194,10 @@ func runStatus(cfgPath string) {
 		fmt.Println("CF Access: gesetzt")
 	}
 
+	if err := agentauth.EnsureDeviceJWT(cfgPath, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Geraete-Token erneuern fehlgeschlagen: %v\n", err)
+		os.Exit(1)
+	}
 	api := newAgentAPI(cfg)
 	if err := api.DaemonPing(); err != nil {
 		fmt.Fprintf(os.Stderr, "Ping fehlgeschlagen: %v\n", err)

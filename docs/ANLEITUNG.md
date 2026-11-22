@@ -359,6 +359,10 @@ Config des Agents: `~/.config/ssh-sync/config.json`
 6. Ab dann: Aenderung im Portal → Sync auf den Geraeten
 ```
 
+### Migration von ssh-profile-syncer (ohne Neuanlage)
+
+Bestehende Geraete des Vorgaengers **ssh-profile-syncer** koennen mit einem Binary-/Installer-Update auf den neuen Server umziehen, ohne Geraete im Portal neu anzulegen. Der Client uebernimmt `~/.config/ssh-profile-syncer/config.json` und das Master-Passwort aus Keyring/Datei, erneuert das Geraete-JWT still und belaesst die alte Config als Sicherung. Auth-Upgrade auf `auth_v1` erst **nach** dem Update aller Geraete. Details und Rueckweg: [migration-ssh-profile-syncer.md](migration-ssh-profile-syncer.md).
+
 ### Migration bestehender Installationen (Auth/Enc-Split)
 
 Nach dem Update von Server und Clients:

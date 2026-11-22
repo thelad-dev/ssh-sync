@@ -88,6 +88,10 @@ paths:
   /api/devices/{id}:
     delete:
       security: [{ bearerAuth: [] }]
+  /api/devices/{id}/rotate:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Geraete-JWT erneuern und Token-Hash neu binden (User-Auth, Rate-Limit)
   /api/devices/{id}/trigger-sync:
     post:
       security: [{ bearerAuth: [] }]

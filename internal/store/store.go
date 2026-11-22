@@ -226,6 +226,21 @@ func (s *Store) TouchDevice(id string) error {
 	return err
 }
 
+func (s *Store) UpdateDeviceTokenHash(id, tokenHash string) error {
+	res, err := s.db.Exec(`UPDATE devices SET token_hash = ? WHERE id = ?`, tokenHash, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) DeleteDevice(id string) error {
 	_, err := s.db.Exec(`DELETE FROM devices WHERE id = ?`, id)
 	return err
