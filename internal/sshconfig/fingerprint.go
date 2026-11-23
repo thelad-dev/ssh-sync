@@ -1,6 +1,7 @@
 package sshconfig
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -8,16 +9,30 @@ import (
 )
 
 // PrivateKeyFingerprint liefert den SHA256-Fingerabdruck des eingebetteten Public Keys.
+// Bei passphrase-geschuetzten OpenSSH-Keys wird der Klartext-Public-Key-Block genutzt.
 func PrivateKeyFingerprint(pemBytes []byte) (string, error) {
+	fp, _, err := inspectPrivateKey(pemBytes)
+	return fp, err
+}
+
+// inspectPrivateKey liefert Fingerabdruck und ob die PEM passphrase-geschuetzt ist.
+func inspectPrivateKey(pemBytes []byte) (fp string, passphraseProtected bool, err error) {
 	key, err := ssh.ParseRawPrivateKey(pemBytes)
 	if err != nil {
-		return "", fmt.Errorf("private key parsen: %w", err)
+		var pe *ssh.PassphraseMissingError
+		if errors.As(err, &pe) {
+			if pe.PublicKey == nil {
+				return "", true, fmt.Errorf("private key parsen: %w", err)
+			}
+			return ssh.FingerprintSHA256(pe.PublicKey), true, nil
+		}
+		return "", false, fmt.Errorf("private key parsen: %w", err)
 	}
 	signer, err := ssh.NewSignerFromKey(key)
 	if err != nil {
-		return "", fmt.Errorf("signer: %w", err)
+		return "", false, fmt.Errorf("signer: %w", err)
 	}
-	return ssh.FingerprintSHA256(signer.PublicKey()), nil
+	return ssh.FingerprintSHA256(signer.PublicKey()), false, nil
 }
 
 // PublicKeyFingerprint liefert den SHA256-Fingerabdruck einer authorized_keys-Zeile oder .pub-Datei.

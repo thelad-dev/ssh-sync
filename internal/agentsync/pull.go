@@ -16,15 +16,16 @@ type PullOptions struct {
 }
 
 type PullResult struct {
-	Hosts        int
-	Keys         int
-	Config       string
-	ConfigBackup string
-	KeyPaths     []string
-	Warnings     []string
-	Plans        []string
-	DryRun       bool
-	NeedsConfirm bool
+	Hosts             int
+	Keys              int
+	Config            string
+	ConfigBackup      string
+	KeyPaths          []string
+	Warnings          []string
+	Plans             []string
+	SkippedIdentities []string
+	DryRun            bool
+	NeedsConfirm      bool
 }
 
 func Pull(cfg *agentconfig.Config, master string, opts PullOptions) (*PullResult, error) {
@@ -65,14 +66,15 @@ func Pull(cfg *agentconfig.Config, master string, opts PullOptions) (*PullResult
 	}
 
 	return &PullResult{
-		Hosts:        len(bundle.Hosts),
-		Keys:         len(bundle.Identities),
-		Config:       applied.ConfigPath,
-		ConfigBackup: applied.BackupPath,
-		KeyPaths:     applied.KeyPaths,
-		Warnings:     applied.Warnings,
-		Plans:        applied.Plans,
-		DryRun:       applied.DryRun,
-		NeedsConfirm: applied.NeedsConfirm,
+		Hosts:             len(bundle.Hosts),
+		Keys:              len(applied.KeyPaths),
+		Config:            applied.ConfigPath,
+		ConfigBackup:      applied.BackupPath,
+		KeyPaths:          applied.KeyPaths,
+		Warnings:          applied.Warnings,
+		Plans:             applied.Plans,
+		SkippedIdentities: applied.SkippedIdentities,
+		DryRun:            applied.DryRun,
+		NeedsConfirm:      applied.NeedsConfirm,
 	}, nil
 }
