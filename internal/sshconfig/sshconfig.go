@@ -120,7 +120,6 @@ func Apply(sshDir string, bundle *store.SyncBundle, decryptedKeys map[string][]b
 		))
 	}
 
-	block := renderConfigBlock(bundle, identityFiles)
 	configPath := result.ConfigPath
 	existing := ""
 	if data, err := os.ReadFile(configPath); err == nil {
@@ -128,10 +127,14 @@ func Apply(sshDir string, bundle *store.SyncBundle, decryptedKeys map[string][]b
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
+	block, skippedLocal := renderConfigBlock(bundle, identityFiles, existing)
+	if len(skippedLocal) > 0 {
+		result.Plans = append(result.Plans, "lokal definiert, uebersprungen: "+strings.Join(skippedLocal, ", "))
+	}
 	merged := spliceManagedBlock(existing, block)
 	configChanged := merged != existing
 	if configChanged {
-		result.Plans = append(result.Plans, fmt.Sprintf("config: managed Block einfuegen/ersetzen (Host local und sonstige lokale Eintraege bleiben)"))
+		result.Plans = append(result.Plans, "config: managed Block einfuegen/ersetzen (Host local und sonstige lokale Eintraege bleiben)")
 	} else {
 		result.Plans = append(result.Plans, "config: unveraendert")
 	}
@@ -307,8 +310,13 @@ func chmodPrivate(path string) error {
 	return os.Chmod(path, 0o600)
 }
 
-func renderConfigBlock(bundle *store.SyncBundle, identityFiles map[string]string) string {
+// renderConfigBlock baut den managed Block. Hosts, die lokal schon definiert sind
+// (ausserhalb der Marker), entfallen; bei lokalem Host * mit IdentityFile entfallen
+// nur IdentityFile/IdentitiesOnly. skipped listet die vollstaendig ausgelassenen Aliase.
+func renderConfigBlock(bundle *store.SyncBundle, identityFiles map[string]string, existingConfig string) (string, []string) {
+	stanzas := parseLocalHostStanzas(stripManagedBlock(existingConfig))
 	hostOrder := orderedHosts(bundle)
+	var skipped []string
 	var b strings.Builder
 	b.WriteString(managedBegin)
 	b.WriteString("\n")
@@ -319,6 +327,11 @@ func renderConfigBlock(bundle *store.SyncBundle, identityFiles map[string]string
 		}
 		extra, err := NormalizeExtra(h.Extra)
 		if err != nil {
+			continue
+		}
+		pol := policyForAlias(stanzas, h.Alias)
+		if pol.skipEntire {
+			skipped = append(skipped, h.Alias)
 			continue
 		}
 		b.WriteString("\nHost ")
@@ -335,17 +348,19 @@ func renderConfigBlock(bundle *store.SyncBundle, identityFiles map[string]string
 			b.WriteString(h.User)
 			b.WriteString("\n")
 		}
-		if h.IdentityID != nil {
-			if p, ok := identityFiles[*h.IdentityID]; ok {
-				for _, path := range identityFileOrder(p) {
-					b.WriteString("  IdentityFile ")
-					b.WriteString(filepath.ToSlash(path))
-					b.WriteString("\n")
+		if !pol.omitIdentity {
+			if h.IdentityID != nil {
+				if p, ok := identityFiles[*h.IdentityID]; ok {
+					for _, path := range identityFileOrder(p) {
+						b.WriteString("  IdentityFile ")
+						b.WriteString(filepath.ToSlash(path))
+						b.WriteString("\n")
+					}
 				}
 			}
-		}
-		if h.IdentitiesOnly {
-			b.WriteString("  IdentitiesOnly yes\n")
+			if h.IdentitiesOnly {
+				b.WriteString("  IdentitiesOnly yes\n")
+			}
 		}
 		if h.ProxyJump != "" {
 			b.WriteString("  ProxyJump ")
@@ -362,7 +377,7 @@ func renderConfigBlock(bundle *store.SyncBundle, identityFiles map[string]string
 	}
 	b.WriteString(managedEnd)
 	b.WriteString("\n")
-	return b.String()
+	return b.String(), skipped
 }
 
 func orderedHosts(bundle *store.SyncBundle) []store.Host {

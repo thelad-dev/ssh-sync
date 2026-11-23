@@ -324,23 +324,16 @@ func TestApplyPreservesLocalSSHEffectiveOrder(t *testing.T) {
 		if after.HostName != before.HostName || after.User != before.User || after.Port != before.Port {
 			t.Fatalf("%s: hostname/user/port geaendert: before=%+v after=%+v", alias, before, after)
 		}
-		if len(after.IdentityFiles) == 0 || after.IdentityFiles[0] != before.IdentityFiles[0] {
-			t.Fatalf("%s: erste IdentityFile muss lokal bleiben: before=%v after=%v", alias, before.IdentityFiles, after.IdentityFiles)
+		if len(after.IdentityFiles) != len(before.IdentityFiles) {
+			t.Fatalf("%s: IdentityFile-Menge geaendert: before=%v after=%v", alias, before.IdentityFiles, after.IdentityFiles)
 		}
-		for i, p := range after.IdentityFiles {
-			if strings.HasSuffix(p, keyConflictSuffix) {
-				base := strings.TrimSuffix(p, keyConflictSuffix)
-				foundPrimaryBefore := false
-				for j := 0; j < i; j++ {
-					if after.IdentityFiles[j] == base {
-						foundPrimaryBefore = true
-						break
-					}
-				}
-				if !foundPrimaryBefore {
-					t.Fatalf("%s: Ausweichdatei steht vor lokaler Datei: %v", alias, after.IdentityFiles)
-				}
+		for i := range before.IdentityFiles {
+			if after.IdentityFiles[i] != before.IdentityFiles[i] {
+				t.Fatalf("%s: IdentityFile-Reihenfolge geaendert: before=%v after=%v", alias, before.IdentityFiles, after.IdentityFiles)
 			}
+		}
+		if strings.Contains(gotStr[strings.Index(gotStr, managedBegin):], "Host "+alias+"\n") {
+			t.Fatalf("%s darf nicht im managed Block stehen", alias)
 		}
 	}
 	only := parseSSHEffective(gotStr, "only-managed")
@@ -699,24 +692,268 @@ func TestRealSSHGPreservesLocalHosts(t *testing.T) {
 		}
 		bif := sshGFields(before[h], "identityfile")
 		aif := sshGFields(after, "identityfile")
-		if len(bif) == 0 || len(aif) == 0 || bif[0] != aif[0] {
-			t.Fatalf("%s: erste identityfile %v -> %v", h, bif, aif)
+		if len(bif) != len(aif) {
+			t.Fatalf("%s: identityfile Menge %v -> %v", h, bif, aif)
 		}
-		for i, p := range aif {
-			if strings.HasSuffix(p, keyConflictSuffix) {
-				base := strings.TrimSuffix(p, keyConflictSuffix)
-				found := false
-				for j := 0; j < i; j++ {
-					if aif[j] == base {
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Fatalf("%s: Ausweichdatei vor lokaler Datei: %v", h, aif)
-				}
+		for i := range bif {
+			if bif[i] != aif[i] {
+				t.Fatalf("%s: identityfile Reihenfolge %v -> %v", h, bif, aif)
 			}
 		}
+	}
+}
+
+func TestApplySkipsLocalHostsListsDryRun(t *testing.T) {
+	dir := t.TempDir()
+	kp, err := keygen.Generate(keygen.TypeEd25519, "srv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := filepath.Join(dir, "id_ed25519")
+	if err := os.WriteFile(primary, kp.PrivatePEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	existing := strings.Join([]string{
+		"Host elitedesk github.com",
+		"  User me",
+		"  IdentityFile " + filepath.ToSlash(primary),
+		"",
+		"Host dock pxmx !dock",
+		"  User root",
+		"  IdentityFile " + filepath.ToSlash(primary),
+		"",
+		"Host *",
+		"  AddKeysToAgent yes",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "config"), []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := "i1"
+	bundle := &store.SyncBundle{
+		Identities: []store.Identity{{ID: id, Name: "id_ed25519"}},
+		Hosts: []store.Host{
+			{ID: "h1", Alias: "elitedesk", HostName: "10.0.0.1", User: "sync", IdentityID: &id},
+			{ID: "h2", Alias: "github.com", HostName: "github.com", User: "git", IdentityID: &id},
+			{ID: "h3", Alias: "dock", HostName: "10.0.0.2", User: "sync", IdentityID: &id},
+			{ID: "h4", Alias: "pxmx", HostName: "10.0.0.3", User: "root", IdentityID: &id},
+			{ID: "h5", Alias: "only-server", HostName: "10.0.0.9", User: "sync", IdentityID: &id},
+		},
+	}
+	res, err := Apply(dir, bundle, map[string][]byte{id: kp.PrivatePEM}, ApplyOptions{DryRun: true, AllowFirstWrite: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var skipLine string
+	for _, p := range res.Plans {
+		if strings.HasPrefix(p, "lokal definiert, uebersprungen:") {
+			skipLine = p
+			break
+		}
+	}
+	if skipLine == "" {
+		t.Fatalf("Skip-Liste fehlt in Plans: %v", res.Plans)
+	}
+	for _, want := range []string{"elitedesk", "github.com", "pxmx"} {
+		if !strings.Contains(skipLine, want) {
+			t.Fatalf("Skip-Liste ohne %s: %s", want, skipLine)
+		}
+	}
+	if strings.Contains(skipLine, "dock") {
+		t.Fatalf("dock ist lokal negiert und darf nicht als lokal definiert gelten: %s", skipLine)
+	}
+	if strings.Contains(skipLine, "only-server") {
+		t.Fatalf("only-server darf nicht uebersprungen werden: %s", skipLine)
+	}
+
+	res2, err := Apply(dir, bundle, map[string][]byte{id: kp.PrivatePEM}, ApplyOptions{AllowFirstWrite: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res2
+	got, err := os.ReadFile(filepath.Join(dir, "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotStr := string(got)
+	managed := gotStr[strings.Index(gotStr, managedBegin):]
+	for _, alias := range []string{"elitedesk", "github.com", "pxmx"} {
+		if strings.Contains(managed, "Host "+alias+"\n") {
+			t.Fatalf("%s darf nicht im managed Block stehen:\n%s", alias, managed)
+		}
+	}
+	if !strings.Contains(managed, "Host dock\n") {
+		t.Fatalf("dock (lokal negiert) muss im managed Block stehen:\n%s", managed)
+	}
+	if !strings.Contains(managed, "Host only-server\n") {
+		t.Fatalf("only-server fehlt im managed Block:\n%s", managed)
+	}
+}
+
+func TestApplyStarIdentityOmitsManagedIdentity(t *testing.T) {
+	dir := t.TempDir()
+	local, err := keygen.Generate(keygen.TypeEd25519, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := keygen.Generate(keygen.TypeEd25519, "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := filepath.Join(dir, "id_ed25519")
+	if err := os.WriteFile(primary, local.PrivatePEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	existing := "Host *\n  IdentityFile " + filepath.ToSlash(primary) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "config"), []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := "i1"
+	bundle := &store.SyncBundle{
+		Identities: []store.Identity{{ID: id, Name: "id_ed25519"}},
+		Hosts: []store.Host{
+			{ID: "h1", Alias: "only-server", HostName: "192.0.2.50", User: "sync", IdentityID: &id, IdentitiesOnly: true},
+		},
+	}
+	if _, err := Apply(dir, bundle, map[string][]byte{id: server.PrivatePEM}, ApplyOptions{AllowFirstWrite: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	managed := string(got)[strings.Index(string(got), managedBegin):]
+	if !strings.Contains(managed, "Host only-server\n") {
+		t.Fatalf("Host muss bleiben:\n%s", managed)
+	}
+	if strings.Contains(strings.ToLower(managed), "identityfile") {
+		t.Fatalf("IdentityFile darf bei Host * nicht im managed Block stehen:\n%s", managed)
+	}
+	if strings.Contains(strings.ToLower(managed), "identitiesonly") {
+		t.Fatalf("IdentitiesOnly darf bei Host * nicht im managed Block stehen:\n%s", managed)
+	}
+	eff := parseSSHEffective(string(got), "only-server")
+	if len(eff.IdentityFiles) != 1 || eff.IdentityFiles[0] != filepath.ToSlash(primary) {
+		t.Fatalf("nur lokale IdentityFile erwartet: %v", eff.IdentityFiles)
+	}
+}
+
+func TestRealSSHGVm88LikePreservesExactIdentityList(t *testing.T) {
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Skip("ssh nicht im PATH")
+	}
+	dir := t.TempDir()
+	local, err := keygen.Generate(keygen.TypeEd25519, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := keygen.Generate(keygen.TypeEd25519, "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaLocal, err := keygen.Generate(keygen.TypeRSA, "rsa-local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaServer, err := keygen.Generate(keygen.TypeRSA, "rsa-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ed := filepath.Join(dir, "id_ed25519")
+	rsa := filepath.Join(dir, "id_rsa")
+	if err := os.WriteFile(ed, local.PrivatePEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rsa, rsaLocal.PrivatePEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	existing := strings.Join([]string{
+		"Host elitedesk",
+		"  HostName 192.0.2.11",
+		"  User me",
+		"  IdentityFile " + filepath.ToSlash(ed),
+		"",
+		"Host github.com",
+		"  HostName github.com",
+		"  User git",
+		"  IdentityFile " + filepath.ToSlash(ed),
+		"",
+		"Host dock pxmx hass",
+		"  User root",
+		"  IdentityFile " + filepath.ToSlash(rsa),
+		"",
+		"Host *",
+		"  AddKeysToAgent yes",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "config"), []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hosts := []string{"elitedesk", "github.com", "dock", "pxmx", "hass"}
+	before := map[string]string{}
+	for _, h := range hosts {
+		before[h] = realSSHG(t, dir, h)
+	}
+	idEd := "id-ed"
+	idRSA := "id-rsa"
+	bundle := &store.SyncBundle{
+		Identities: []store.Identity{
+			{ID: idEd, Name: "id_ed25519"},
+			{ID: idRSA, Name: "id_rsa"},
+		},
+		Hosts: []store.Host{
+			{ID: "h1", Alias: "elitedesk", HostName: "192.0.2.11", User: "me", IdentityID: &idEd},
+			{ID: "h2", Alias: "github.com", HostName: "github.com", User: "git", IdentityID: &idEd},
+			{ID: "h3", Alias: "dock", HostName: "192.0.2.21", User: "root", IdentityID: &idRSA},
+			{ID: "h4", Alias: "pxmx", HostName: "192.0.2.22", User: "root", IdentityID: &idRSA},
+			{ID: "h5", Alias: "hass", HostName: "192.0.2.23", User: "root", IdentityID: &idRSA},
+			{ID: "h6", Alias: "fresh-server", HostName: "192.0.2.99", User: "sync", IdentityID: &idEd},
+		},
+	}
+	res, err := Apply(dir, bundle, map[string][]byte{
+		idEd:  server.PrivatePEM,
+		idRSA: rsaServer.PrivatePEM,
+	}, ApplyOptions{AllowFirstWrite: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipOK := false
+	for _, p := range res.Plans {
+		if strings.HasPrefix(p, "lokal definiert, uebersprungen:") &&
+			strings.Contains(p, "elitedesk") &&
+			strings.Contains(p, "github.com") &&
+			strings.Contains(p, "dock") {
+			skipOK = true
+			break
+		}
+	}
+	if !skipOK {
+		t.Fatalf("Skip-Liste unvollstaendig: %v", res.Plans)
+	}
+	for _, h := range hosts {
+		after := realSSHG(t, dir, h)
+		if sshGField(before[h], "hostname") != sshGField(after, "hostname") ||
+			sshGField(before[h], "user") != sshGField(after, "user") ||
+			sshGField(before[h], "port") != sshGField(after, "port") {
+			t.Fatalf("%s: hostname/user/port geaendert", h)
+		}
+		bif := sshGFields(before[h], "identityfile")
+		aif := sshGFields(after, "identityfile")
+		if len(bif) != len(aif) {
+			t.Fatalf("%s: identityfile Menge %v -> %v", h, bif, aif)
+		}
+		for i := range bif {
+			if bif[i] != aif[i] {
+				t.Fatalf("%s: identityfile %v -> %v", h, bif, aif)
+			}
+		}
+	}
+	fresh := realSSHG(t, dir, "fresh-server")
+	if sshGField(fresh, "hostname") != "192.0.2.99" || sshGField(fresh, "user") != "sync" {
+		t.Fatalf("fresh-server falsch: %s", fresh)
+	}
+	if len(sshGFields(fresh, "identityfile")) == 0 {
+		t.Fatal("fresh-server braucht IdentityFile aus dem managed Block")
 	}
 }
 

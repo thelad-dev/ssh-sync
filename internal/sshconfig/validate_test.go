@@ -75,7 +75,7 @@ func TestRenderConfigBlockDropsHostileHosts(t *testing.T) {
 		},
 	}
 	identityFiles := map[string]string{id: "/tmp/id_ed25519"}
-	block := renderConfigBlock(bundle, identityFiles)
+	block, _ := renderConfigBlock(bundle, identityFiles, "")
 
 	if strings.Contains(strings.ToLower(block), "proxycommand") {
 		t.Fatalf("ProxyCommand darf nicht geschrieben werden:\n%s", block)
