@@ -236,17 +236,19 @@ async function refreshAll() {
 function renderInstallHints() {
   const base = window.location.origin;
   document.getElementById('install-linux').textContent =
-    `# cosign erforderlich (Sigstore). Skript speichern, lesen, dann ausfuehren - kein curl|sh
+    `# Skript speichern, lesen, dann ausfuehren - kein curl|sh
+# cosign aus PATH oder gepinnter Bootstrap (Sigstore)
 curl -fsSL ${base}/install/linux.sh -o install-linux.sh
 less install-linux.sh
 sh install-linux.sh
-# ohne cosign (keine Herkunft): sh install-linux.sh --unsicher-nur-pruefsumme`;
+# ohne Herkunft: sh install-linux.sh --unsicher-nur-pruefsumme`;
   document.getElementById('install-windows').textContent =
-    `# cosign erforderlich. Skript speichern, lesen, dann ausfuehren - kein irm|iex
+    `# Skript speichern, lesen, dann ausfuehren - kein irm|iex
+# cosign aus PATH oder gepinnter Bootstrap
 Invoke-WebRequest -Uri ${base}/install/windows.ps1 -OutFile install-windows.ps1
 notepad install-windows.ps1
 powershell -File install-windows.ps1
-# ohne cosign: powershell -File install-windows.ps1 -UnsicherNurPruefsumme`;
+# ohne Herkunft: powershell -File install-windows.ps1 -UnsicherNurPruefsumme`;
   document.getElementById('install-post').textContent =
     `# Nach Install: Geraet hier anlegen -> Config + Befehle kopieren
 # Binary kommt vom GitHub-Release; Installer prueft manifest.json per cosign

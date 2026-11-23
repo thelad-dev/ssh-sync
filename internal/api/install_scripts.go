@@ -32,7 +32,7 @@ func InstallScriptsHandler() http.Handler {
 			if r.Method == http.MethodHead {
 				return
 			}
-			_, _ = fmt.Fprint(w, linuxInstallScript(base))
+			_, _ = fmt.Fprint(w, LinuxInstallScript(base))
 		case "/install/windows.ps1":
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("Content-Disposition", "inline; filename=install-windows.ps1")
@@ -74,12 +74,12 @@ func requestBaseURL(r *http.Request) (string, error) {
 	return releaseverify.SanitizeInstallBaseURL(scheme, r.Host)
 }
 
-func linuxInstallScript(base string) string {
-	return LinuxInstallScript(base)
-}
-
 // LinuxInstallScript liefert den generierten POSIX-Installer (Linux und macOS).
 func LinuxInstallScript(base string) string {
+	return linuxInstallScript(base, cosignPinnedVersion, cosignBootstrapSHA256)
+}
+
+func linuxInstallScript(base, cosignVersion string, pins map[string]string) string {
 	return fmt.Sprintf(`#!/bin/sh
 # ssh-sync  -  Linux/macOS Installer
 # Empfohlen: Skript laden, lesen, dann ausfuehren. Nicht: curl | sh
@@ -88,6 +88,17 @@ func LinuxInstallScript(base string) string {
 #   sh install-linux.sh
 # Optional ohne cosign (KEINE Herkunftspruefung):
 #   sh install-linux.sh --unsicher-nur-pruefsumme
+#
+# Vertrauensmodell:
+#   1. Dieses Skript kommt per TLS vom Portal-Server.
+#   2. Fehlt cosign im PATH, laedt der Installer eine gepinnte cosign-Version
+#      (github.com/sigstore/cosign) in ein privates Temp-Verzeichnis und prueft
+#      die SHA-256 aus diesem Skript VOR der Ausfuehrung; danach Loeschung.
+#   3. cosign prueft die Release-Artefakte gegen die Sigstore-Identitaet
+#      (GitHub Actions dieses Repos). Vorhandenes cosign im PATH hat Vorrang.
+# Was das nicht schuetzt: ein manipuliertes Install-Skript (Kompromittierung
+# des Servers oder des TLS-Pfads zum Skript). Lies das Skript vor dem Ausfuehren.
+# Pins erneuern: docs/release-signing.md (Cosign-Bootstrap erneuern).
 set -eu
 
 PORTAL_URL="${SSH_SYNC_URL:-%s}"
@@ -101,6 +112,14 @@ UNSICHER_NUR_PRUEFSUMME=0
 COSIGN_OIDC_ISSUER="https://token.actions.githubusercontent.com"
 COSIGN_IDENTITY_REGEXP='^https://github\.com/thelad-dev/ssh-sync/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 GITHUB_REPO="https://github.com/thelad-dev/ssh-sync"
+# Cosign-Bootstrap-Pins (eine Stelle im Quelltext: internal/api/cosign_bootstrap.go)
+COSIGN_PIN_VERSION="%s"
+COSIGN_PIN_LINUX_AMD64="%s"
+COSIGN_PIN_LINUX_ARM64="%s"
+COSIGN_PIN_DARWIN_AMD64="%s"
+COSIGN_PIN_DARWIN_ARM64="%s"
+COSIGN_BIN=""
+COSIGN_BOOTSTRAP=""
 
 for arg in "$@"; do
   case "$arg" in
@@ -248,23 +267,72 @@ hash_from_sums() {
   awk -v a="$asset" 'tolower($2)==tolower(a) || $2==("./" a) { print tolower($1); exit }' "$sums"
 }
 
-print_cosign_install_help() {
+print_cosign_bootstrap_help() {
   echo "" >&2
-  echo "cosign fehlt. Herkunftspruefung (Sigstore) braucht cosign." >&2
-  echo "Installation (Beispiele):" >&2
-  echo "  Linux:  https://docs.sigstore.dev/cosign/system_config/installation/" >&2
-  echo "          oder: go install github.com/sigstore/cosign/v2/cmd/cosign@latest" >&2
-  echo "  macOS:  brew install cosign" >&2
+  echo "cosign-Bootstrap fehlgeschlagen. Herkunftspruefung braucht cosign." >&2
+  echo "Manuell: https://docs.sigstore.dev/cosign/system_config/installation/" >&2
+  echo "  Linux: go install github.com/sigstore/cosign/v2/cmd/cosign@latest" >&2
+  echo "  macOS: brew install cosign" >&2
   echo "" >&2
-  echo "Manuelle Pruefung nach Download von Release-Artefakten:" >&2
-  echo "  cosign verify-blob \\" >&2
-  echo "    --bundle manifest.json.sigstore.json \\" >&2
-  echo "    --certificate-identity-regexp '$COSIGN_IDENTITY_REGEXP' \\" >&2
-  echo "    --certificate-oidc-issuer $COSIGN_OIDC_ISSUER \\" >&2
-  echo "    manifest.json" >&2
-  echo "" >&2
-  echo "Ohne cosign nur mit explizitem Schalter (KEINE Herkunftspruefung):" >&2
+  echo "Ohne Netzwerk nur mit explizitem Schalter (KEINE Herkunftspruefung):" >&2
   echo "  sh install-linux.sh --unsicher-nur-pruefsumme" >&2
+}
+
+resolve_cosign() {
+  if command -v cosign >/dev/null 2>&1; then
+    COSIGN_BIN="cosign"
+    echo "-> Nutze cosign aus PATH"
+    return 0
+  fi
+  cosign_asset=""
+  cosign_want=""
+  case "$os" in
+    linux)
+      case "$arch" in
+        x86_64|amd64)  cosign_asset="cosign-linux-amd64"; cosign_want="$COSIGN_PIN_LINUX_AMD64" ;;
+        aarch64|arm64) cosign_asset="cosign-linux-arm64"; cosign_want="$COSIGN_PIN_LINUX_ARM64" ;;
+      esac
+      ;;
+    darwin)
+      case "$arch" in
+        x86_64|amd64)  cosign_asset="cosign-darwin-amd64"; cosign_want="$COSIGN_PIN_DARWIN_AMD64" ;;
+        arm64|aarch64) cosign_asset="cosign-darwin-arm64"; cosign_want="$COSIGN_PIN_DARWIN_ARM64" ;;
+      esac
+      ;;
+  esac
+  if [ -z "$cosign_asset" ] || [ -z "$cosign_want" ]; then
+    echo "cosign-Bootstrap: keine Pin fuer $os/$arch" >&2
+    return 1
+  fi
+  COSIGN_BOOTSTRAP="$WORKDIR/cosign-bootstrap"
+  mkdir -p "$COSIGN_BOOTSTRAP"
+  cosign_url="https://github.com/sigstore/cosign/releases/download/${COSIGN_PIN_VERSION}/${cosign_asset}"
+  cosign_dest="$COSIGN_BOOTSTRAP/$cosign_asset"
+  echo "-> cosign fehlt im PATH; lade gepinnte $COSIGN_PIN_VERSION ($cosign_asset)"
+  # Eigener Download ohne CF-Header; Fehler als return (nicht set -e exit in curl_fetch).
+  if command -v curl >/dev/null 2>&1; then
+    if ! curl -fsSL "$cosign_url" -o "$cosign_dest"; then
+      echo "cosign-Bootstrap: Download fehlgeschlagen (Netzwerk/Offline?): $cosign_url" >&2
+      return 1
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    if ! wget -q -O "$cosign_dest" "$cosign_url"; then
+      echo "cosign-Bootstrap: Download fehlgeschlagen (Netzwerk/Offline?): $cosign_url" >&2
+      return 1
+    fi
+  else
+    echo "cosign-Bootstrap: curl oder wget erforderlich" >&2
+    return 1
+  fi
+  cosign_got="$(file_sha256 "$cosign_dest")"
+  if [ "$cosign_got" != "$cosign_want" ]; then
+    echo "cosign-Bootstrap: SHA-256 stimmt nicht (got $cosign_got want $cosign_want)" >&2
+    echo "cosign-Bootstrap: Abbruch, Binary wird nicht ausgefuehrt." >&2
+    return 1
+  fi
+  chmod +x "$cosign_dest"
+  COSIGN_BIN="$cosign_dest"
+  return 0
 }
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/ssh-sync-install.XXXXXX")"
@@ -281,9 +349,27 @@ curl_fetch "$RELEASE_BASE/manifest.json.sigstore.json" "$BUNDLE"
 curl_fetch "$RELEASE_BASE/SHA256SUMS" "$SUMS"
 curl_fetch "$RELEASE_BASE/$ASSET" "$BIN"
 
-if command -v cosign >/dev/null 2>&1; then
+if [ "$UNSICHER_NUR_PRUEFSUMME" = "1" ] && ! command -v cosign >/dev/null 2>&1; then
+  echo "WARNUNG: cosign fehlt. Nur SHA-256 gegen SHA256SUMS aus demselben Release." >&2
+  echo "WARNUNG: Keine Herkunftspruefung (Sigstore/GitHub-Identitaet). Nur mit --unsicher-nur-pruefsumme." >&2
+  echo "Repo-Referenz: $GITHUB_REPO" >&2
+  WANT_HASH="$(hash_from_sums "$ASSET" "$SUMS")"
+  if [ -z "$WANT_HASH" ]; then
+    echo "Hash fuer $ASSET fehlt in SHA256SUMS" >&2
+    exit 1
+  fi
+  GOT_HASH="$(file_sha256 "$BIN")"
+  if [ "$GOT_HASH" != "$WANT_HASH" ]; then
+    echo "SHA-256 stimmt nicht (got $GOT_HASH want $WANT_HASH)" >&2
+    exit 1
+  fi
+else
+  if ! resolve_cosign; then
+    print_cosign_bootstrap_help
+    exit 1
+  fi
   echo "-> Pruefe Sigstore-Bundle mit cosign (GitHub Actions Identitaet)"
-  if ! cosign verify-blob \
+  if ! "$COSIGN_BIN" verify-blob \
     --bundle "$BUNDLE" \
     --certificate-identity-regexp "$COSIGN_IDENTITY_REGEXP" \
     --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" \
@@ -301,23 +387,6 @@ if command -v cosign >/dev/null 2>&1; then
     echo "SHA-256 stimmt nicht (got $GOT_HASH want $WANT_HASH)" >&2
     exit 1
   fi
-elif [ "$UNSICHER_NUR_PRUEFSUMME" = "1" ]; then
-  echo "WARNUNG: cosign fehlt. Nur SHA-256 gegen SHA256SUMS aus demselben Release." >&2
-  echo "WARNUNG: Keine Herkunftspruefung (Sigstore/GitHub-Identitaet). Nur mit --unsicher-nur-pruefsumme." >&2
-  echo "Repo-Referenz: $GITHUB_REPO" >&2
-  WANT_HASH="$(hash_from_sums "$ASSET" "$SUMS")"
-  if [ -z "$WANT_HASH" ]; then
-    echo "Hash fuer $ASSET fehlt in SHA256SUMS" >&2
-    exit 1
-  fi
-  GOT_HASH="$(file_sha256 "$BIN")"
-  if [ "$GOT_HASH" != "$WANT_HASH" ]; then
-    echo "SHA-256 stimmt nicht (got $GOT_HASH want $WANT_HASH)" >&2
-    exit 1
-  fi
-else
-  print_cosign_install_help
-  exit 1
 fi
 
 SIZE="$(wc -c <"$BIN" | tr -d ' ')"
@@ -379,10 +448,20 @@ echo "  2. Nach ~/.config/ssh-sync/config.json"
 echo "  3. $BIN_NAME unlock && systemctl --user start ssh-sync   # Linux mit systemd"
 echo ""
 echo "Updates: $BIN_NAME update   (Client prueft Sigstore-Manifest)"
-`, base, base, defaultReleaseBase)
+`, base, base, defaultReleaseBase,
+		cosignVersion,
+		pins["linux-amd64"],
+		pins["linux-arm64"],
+		pins["darwin-amd64"],
+		pins["darwin-arm64"],
+	)
 }
 
 func windowsInstallScript(base string) string {
+	return windowsInstallScriptWithPins(base, cosignPinnedVersion, cosignBootstrapSHA256)
+}
+
+func windowsInstallScriptWithPins(base, cosignVersion string, pins map[string]string) string {
 	return fmt.Sprintf(`# ssh-sync  -  Windows Installer (PowerShell)
 # Empfohlen: Skript speichern, lesen, dann ausfuehren. Nicht: irm | iex
 #   Invoke-WebRequest -Uri '%s/install/windows.ps1' -OutFile install-windows.ps1
@@ -390,6 +469,17 @@ func windowsInstallScript(base string) string {
 #   powershell -File install-windows.ps1
 # Optional ohne cosign (KEINE Herkunftspruefung):
 #   powershell -File install-windows.ps1 -UnsicherNurPruefsumme
+#
+# Vertrauensmodell:
+#   1. Dieses Skript kommt per TLS vom Portal-Server.
+#   2. Fehlt cosign im PATH, laedt der Installer eine gepinnte cosign-Version
+#      (github.com/sigstore/cosign) in ein privates Temp-Verzeichnis und prueft
+#      die SHA-256 aus diesem Skript VOR der Ausfuehrung; danach Loeschung.
+#   3. cosign prueft die Release-Artefakte gegen die Sigstore-Identitaet
+#      (GitHub Actions dieses Repos). Vorhandenes cosign im PATH hat Vorrang.
+# Was das nicht schuetzt: ein manipuliertes Install-Skript (Kompromittierung
+# des Servers oder des TLS-Pfads zum Skript). Lies das Skript vor dem Ausfuehren.
+# Pins erneuern: docs/release-signing.md (Cosign-Bootstrap erneuern).
 param(
   [switch]$UnsicherNurPruefsumme
 )
@@ -402,6 +492,8 @@ $AllowInsecure = $env:SSH_SYNC_ALLOW_INSECURE -eq "1"
 $CosignOidcIssuer = "https://token.actions.githubusercontent.com"
 $CosignIdentityRegexp = '^https://github\.com/thelad-dev/ssh-sync/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 $GithubRepo = "https://github.com/thelad-dev/ssh-sync"
+$CosignPinVersion = "%s"
+$CosignPinWindowsAmd64 = "%s"
 
 function Assert-HttpsOrLoopback([string]$Url, [string]$Label) {
   if ($Url -match '^https://') { return }
@@ -470,16 +562,31 @@ function Get-HashFromSums([string]$AssetName, [string]$SumsPath) {
   return $null
 }
 
-$cosign = Get-Command cosign -ErrorAction SilentlyContinue
-if ($null -ne $cosign) {
-  Write-Host "-> Pruefe Sigstore-Bundle mit cosign (GitHub Actions Identitaet)"
-  & cosign verify-blob --bundle $Bundle --certificate-identity-regexp $CosignIdentityRegexp --certificate-oidc-issuer $CosignOidcIssuer $Manifest
-  if ($LASTEXITCODE -ne 0) { throw "Sigstore-Verifikation fehlgeschlagen" }
-  $want = Get-HashFromManifest $Asset $Manifest
-  if (-not $want) { throw "Hash fuer $Asset fehlt im signierten Manifest" }
-  $got = Get-FileSha256 $ZipPath
-  if ($got -ne $want) { throw "SHA-256 stimmt nicht (got $got want $want)" }
-} elseif ($UnsicherNurPruefsumme) {
+function Resolve-Cosign {
+  $existing = Get-Command cosign -ErrorAction SilentlyContinue
+  if ($null -ne $existing) {
+    Write-Host "-> Nutze cosign aus PATH"
+    return $existing.Source
+  }
+  $asset = "cosign-windows-amd64.exe"
+  $want = $CosignPinWindowsAmd64
+  $url = "https://github.com/sigstore/cosign/releases/download/$CosignPinVersion/$asset"
+  $dest = Join-Path $Work $asset
+  Write-Host "-> cosign fehlt im PATH; lade gepinnte $CosignPinVersion ($asset)"
+  try {
+    Invoke-WebRequest -Uri $url -OutFile $dest -Headers $Headers
+  } catch {
+    throw "cosign-Bootstrap: Download fehlgeschlagen (Netzwerk/Offline?): $url"
+  }
+  $got = Get-FileSha256 $dest
+  if ($got -ne $want) {
+    throw "cosign-Bootstrap: SHA-256 stimmt nicht (got $got want $want). Abbruch, Binary wird nicht ausgefuehrt."
+  }
+  return $dest
+}
+
+$pathCosign = Get-Command cosign -ErrorAction SilentlyContinue
+if ($UnsicherNurPruefsumme -and ($null -eq $pathCosign)) {
   Write-Host "WARNUNG: cosign fehlt. Nur SHA-256 gegen SHA256SUMS. Keine Herkunftspruefung." -ForegroundColor Yellow
   Write-Host "Repo-Referenz: $GithubRepo" -ForegroundColor Yellow
   $want = Get-HashFromSums $Asset $Sums
@@ -487,17 +594,23 @@ if ($null -ne $cosign) {
   $got = Get-FileSha256 $ZipPath
   if ($got -ne $want) { throw "SHA-256 stimmt nicht (got $got want $want)" }
 } else {
-  Write-Host ""
-  Write-Host "cosign fehlt. Herkunftspruefung (Sigstore) braucht cosign." -ForegroundColor Red
-  Write-Host "Installation (Beispiele):"
-  Write-Host "  winget install sigstore.cosign"
-  Write-Host "  oder: https://docs.sigstore.dev/cosign/system_config/installation/"
-  Write-Host ""
-  Write-Host "Manuelle Pruefung:"
-  Write-Host "  cosign verify-blob --bundle manifest.json.sigstore.json --certificate-identity-regexp '$CosignIdentityRegexp' --certificate-oidc-issuer $CosignOidcIssuer manifest.json"
-  Write-Host ""
-  Write-Host "Ohne cosign nur mit: powershell -File install-windows.ps1 -UnsicherNurPruefsumme"
-  throw "cosign erforderlich (oder -UnsicherNurPruefsumme)"
+  try {
+    $cosignBin = Resolve-Cosign
+  } catch {
+    Write-Host ""
+    Write-Host "cosign-Bootstrap fehlgeschlagen. Herkunftspruefung braucht cosign." -ForegroundColor Red
+    Write-Host "Manuell: winget install sigstore.cosign"
+    Write-Host "  oder: https://docs.sigstore.dev/cosign/system_config/installation/"
+    Write-Host "Ohne Netzwerk nur mit: powershell -File install-windows.ps1 -UnsicherNurPruefsumme"
+    throw
+  }
+  Write-Host "-> Pruefe Sigstore-Bundle mit cosign (GitHub Actions Identitaet)"
+  & $cosignBin verify-blob --bundle $Bundle --certificate-identity-regexp $CosignIdentityRegexp --certificate-oidc-issuer $CosignOidcIssuer $Manifest
+  if ($LASTEXITCODE -ne 0) { throw "Sigstore-Verifikation fehlgeschlagen" }
+  $want = Get-HashFromManifest $Asset $Manifest
+  if (-not $want) { throw "Hash fuer $Asset fehlt im signierten Manifest" }
+  $got = Get-FileSha256 $ZipPath
+  if ($got -ne $want) { throw "SHA-256 stimmt nicht (got $got want $want)" }
 }
 
 Expand-Archive -Path $ZipPath -DestinationPath $InstallDir -Force
@@ -523,7 +636,10 @@ Write-Host ""
 Write-Host "Fertig. Binary: $ExePath"
 Write-Host "Portal: $PortalUrl"
 Write-Host "Updates: ssh-sync.exe update"
-`, base, windowsServiceInstallHelper(), base, defaultReleaseBase)
+`, base, windowsServiceInstallHelper(), base, defaultReleaseBase,
+		cosignVersion,
+		pins["windows-amd64"],
+	)
 }
 
 func windowsServiceInstallScript(base string) string {

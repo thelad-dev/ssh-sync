@@ -17,7 +17,7 @@ Ausser Scope: Kompromittierung des Betreiber-Hosts, physischer Zugriff, schwache
 ## Release-Verifikation
 
 - Agent-Binaries nur mit gültiger Sigstore-Verifikation über `manifest.json` + `manifest.json.sigstore.json` akzeptieren (GitHub-Actions-Identität; siehe `docs/release-signing.md`).
-- Installer: `cosign verify-blob` oder explizit `--unsicher-nur-pruefsumme` (nur SHA-256, keine Herkunft).
+- Installer: `cosign verify-blob` (PATH oder gepinnter Bootstrap) oder explizit `--unsicher-nur-pruefsumme` (nur SHA-256, keine Herkunft). Vertrauensmodell: [docs/release-signing.md](docs/release-signing.md#installer-vertrauensmodell-cosign-bootstrap).
 - Keine `curl | sh` / `irm | iex`-Einzeiler.
 
 ## Bekannte Grenzen (kurz)
