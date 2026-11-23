@@ -2,6 +2,7 @@ package sshconfig
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,6 +47,72 @@ func TestMergeConfigBackupAndManagedOnly(t *testing.T) {
 	}
 	if string(got) == block {
 		t.Fatal("config darf nicht nur aus dem managed Block bestehen")
+	}
+}
+
+func TestSpliceManagedBlockAppendsAtEnd(t *testing.T) {
+	existing := "Host workstation\n  HostName 192.0.2.10\n  User me\n  IdentityFile /home/me/.ssh/id_ed25519\n\nHost github.com\n  HostName github.com\n  IdentityFile /home/me/.ssh/id_ed25519\n"
+	block := managedBegin + "\nHost workstation\n  HostName 192.0.2.10\n  IdentityFile /home/me/.ssh/id_ed25519.ssh-sync\n" + managedEnd + "\n"
+	got := spliceManagedBlock(existing, block)
+	if !strings.HasPrefix(got, existing) {
+		t.Fatalf("lokale Zeilen muessen bytegleich vor dem Block bleiben:\n%s", got)
+	}
+	beginIdx := strings.Index(got, managedBegin)
+	if beginIdx < len(existing) {
+		t.Fatalf("Block muss nach den lokalen Zeilen stehen, begin=%d existingLen=%d", beginIdx, len(existing))
+	}
+	if !strings.Contains(got[len(existing):], managedBegin) {
+		t.Fatalf("managed Block fehlt am Ende:\n%s", got)
+	}
+}
+
+func TestSpliceManagedBlockReplacesInPlace(t *testing.T) {
+	prefix := "Host before\n  HostName a.example\n\n"
+	oldBlock := managedBegin + "\nHost old\n  HostName old.example\n" + managedEnd + "\n"
+	suffix := "\nHost after\n  HostName b.example\n"
+	existing := prefix + oldBlock + suffix
+	newBlock := managedBegin + "\nHost new\n  HostName new.example\n" + managedEnd + "\n"
+	got := spliceManagedBlock(existing, newBlock)
+	if !strings.HasPrefix(got, prefix) {
+		t.Fatalf("Prefix vor dem Block muss bleiben:\n%s", got)
+	}
+	if !strings.HasSuffix(got, suffix) && !strings.Contains(got, "Host after") {
+		t.Fatalf("Suffix nach dem Block muss bleiben:\n%s", got)
+	}
+	if contains(got, "Host old") {
+		t.Fatal("alter managed Host muss ersetzt sein")
+	}
+	if !contains(got, "Host new") {
+		t.Fatal("neuer managed Host fehlt")
+	}
+	// Block bleibt in der Mitte: before vor BEGIN, after nach END.
+	beforeIdx := strings.Index(got, "Host before")
+	beginIdx := strings.Index(got, managedBegin)
+	afterIdx := strings.Index(got, "Host after")
+	if !(beforeIdx < beginIdx && beginIdx < afterIdx) {
+		t.Fatalf("Block muss in der Mitte bleiben: before=%d begin=%d after=%d", beforeIdx, beginIdx, afterIdx)
+	}
+}
+
+func TestIdentityFileOrderAlternateAfterPrimary(t *testing.T) {
+	dir := t.TempDir()
+	primary := filepath.Join(dir, "id_ed25519")
+	alt := primary + keyConflictSuffix
+	if err := os.WriteFile(primary, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	order := identityFileOrder(alt)
+	if len(order) != 2 || order[0] != primary || order[1] != alt {
+		t.Fatalf("erwartet [primary, alt], got %#v", order)
+	}
+	orderOnly := identityFileOrder(primary)
+	if len(orderOnly) != 1 || orderOnly[0] != primary {
+		t.Fatalf("ohne Ausweichdatei nur primary: %#v", orderOnly)
+	}
+	missingPrimary := filepath.Join(dir, "missing") + keyConflictSuffix
+	orderMissing := identityFileOrder(missingPrimary)
+	if len(orderMissing) != 1 || orderMissing[0] != missingPrimary {
+		t.Fatalf("ohne lokale Datei nur Ausweichdatei: %#v", orderMissing)
 	}
 }
 
@@ -179,14 +246,109 @@ func TestApplyPrivateKeyConflictUsesAlternate(t *testing.T) {
 		t.Fatal("Ausweichdatei hat falschen Fingerabdruck")
 	}
 	cfg, _ := os.ReadFile(filepath.Join(dir, "config"))
-	if !contains(string(cfg), "Host local") {
+	cfgStr := string(cfg)
+	if !contains(cfgStr, "Host local") {
 		t.Fatal("Host local muss bleiben")
 	}
-	if !contains(string(cfg), filepath.ToSlash(alt)) && !contains(string(cfg), alt) {
+	if !contains(cfgStr, filepath.ToSlash(alt)) && !contains(cfgStr, alt) {
 		t.Fatalf("IdentityFile sollte auf Ausweichdatei zeigen:\n%s", cfg)
+	}
+	primIF := "IdentityFile " + filepath.ToSlash(primary)
+	altIF := "IdentityFile " + filepath.ToSlash(alt)
+	primIdx := strings.Index(cfgStr, primIF)
+	altIdx := strings.Index(cfgStr, altIF)
+	if primIdx < 0 || altIdx < 0 || primIdx > altIdx {
+		t.Fatalf("lokale Datei muss vor Ausweichdatei stehen:\n%s", cfg)
 	}
 	if len(res.Warnings) == 0 {
 		t.Fatal("erwartet Warnung bei Kollision")
+	}
+}
+
+func TestApplyPreservesLocalSSHEffectiveOrder(t *testing.T) {
+	dir := t.TempDir()
+	local, err := keygen.Generate(keygen.TypeEd25519, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := keygen.Generate(keygen.TypeEd25519, "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := filepath.Join(dir, "id_ed25519")
+	if err := os.WriteFile(primary, local.PrivatePEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	existing := "" +
+		"Host workstation\n" +
+		"  HostName 192.0.2.20\n" +
+		"  User me\n" +
+		"  Port 22\n" +
+		"  IdentityFile " + filepath.ToSlash(primary) + "\n" +
+		"\n" +
+		"Host github.com\n" +
+		"  HostName github.com\n" +
+		"  User git\n" +
+		"  IdentityFile " + filepath.ToSlash(primary) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "config"), []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := "i1"
+	bundle := &store.SyncBundle{
+		Identities: []store.Identity{{ID: id, Name: "id_ed25519"}},
+		Hosts: []store.Host{
+			{ID: "h1", Alias: "workstation", HostName: "192.0.2.20", User: "me", IdentityID: &id},
+			{ID: "h2", Alias: "github.com", HostName: "github.com", User: "git", IdentityID: &id},
+			{ID: "h3", Alias: "only-managed", HostName: "192.0.2.99", User: "sync", IdentityID: &id},
+		},
+	}
+	beforeEff := map[string]sshEffective{}
+	for _, alias := range []string{"workstation", "github.com"} {
+		beforeEff[alias] = parseSSHEffective(existing, alias)
+	}
+	if _, err := Apply(dir, bundle, map[string][]byte{id: server.PrivatePEM}, ApplyOptions{AllowFirstWrite: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotStr := string(got)
+	if !strings.HasPrefix(gotStr, existing) {
+		t.Fatalf("lokale Config muss bytegleich vor dem Block bleiben:\n%s", gotStr)
+	}
+	alt := primary + keyConflictSuffix
+	for _, alias := range []string{"workstation", "github.com"} {
+		after := parseSSHEffective(gotStr, alias)
+		before := beforeEff[alias]
+		if after.HostName != before.HostName || after.User != before.User || after.Port != before.Port {
+			t.Fatalf("%s: hostname/user/port geaendert: before=%+v after=%+v", alias, before, after)
+		}
+		if len(after.IdentityFiles) == 0 || after.IdentityFiles[0] != before.IdentityFiles[0] {
+			t.Fatalf("%s: erste IdentityFile muss lokal bleiben: before=%v after=%v", alias, before.IdentityFiles, after.IdentityFiles)
+		}
+		for i, p := range after.IdentityFiles {
+			if strings.HasSuffix(p, keyConflictSuffix) {
+				base := strings.TrimSuffix(p, keyConflictSuffix)
+				foundPrimaryBefore := false
+				for j := 0; j < i; j++ {
+					if after.IdentityFiles[j] == base {
+						foundPrimaryBefore = true
+						break
+					}
+				}
+				if !foundPrimaryBefore {
+					t.Fatalf("%s: Ausweichdatei steht vor lokaler Datei: %v", alias, after.IdentityFiles)
+				}
+			}
+		}
+	}
+	only := parseSSHEffective(gotStr, "only-managed")
+	if only.HostName != "192.0.2.99" || only.User != "sync" {
+		t.Fatalf("only-managed falsch: %+v", only)
+	}
+	if len(only.IdentityFiles) < 2 || only.IdentityFiles[0] != filepath.ToSlash(primary) || only.IdentityFiles[1] != filepath.ToSlash(alt) {
+		t.Fatalf("only-managed IdentityFile-Reihenfolge: %v", only.IdentityFiles)
 	}
 }
 
@@ -364,4 +526,228 @@ func PrivateKeyMustFP(t *testing.T, pem []byte) string {
 
 func contains(s, sub string) bool {
 	return strings.Contains(s, sub)
+}
+
+// sshEffective mimics the parts of `ssh -G` we care about: first HostName/User/Port
+// and the ordered IdentityFile list across all matching Host blocks.
+type sshEffective struct {
+	HostName      string
+	User          string
+	Port          string
+	IdentityFiles []string
+}
+
+func parseSSHEffective(config, alias string) sshEffective {
+	eff := sshEffective{Port: "22"}
+	inMatch := false
+	hostSet := false
+	userSet := false
+	portSet := false
+	for _, raw := range strings.Split(config, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		key := strings.ToLower(fields[0])
+		switch key {
+		case "host":
+			inMatch = false
+			for _, pat := range fields[1:] {
+				if hostPatternMatches(pat, alias) {
+					inMatch = true
+					break
+				}
+			}
+		case "match":
+			inMatch = false
+		default:
+			if !inMatch {
+				continue
+			}
+			val := ""
+			if len(fields) > 1 {
+				val = strings.Join(fields[1:], " ")
+			}
+			switch key {
+			case "hostname":
+				if !hostSet {
+					eff.HostName = val
+					hostSet = true
+				}
+			case "user":
+				if !userSet {
+					eff.User = val
+					userSet = true
+				}
+			case "port":
+				if !portSet {
+					eff.Port = val
+					portSet = true
+				}
+			case "identityfile":
+				eff.IdentityFiles = append(eff.IdentityFiles, val)
+			}
+		}
+	}
+	return eff
+}
+
+func hostPatternMatches(pattern, alias string) bool {
+	if pattern == alias {
+		return true
+	}
+	ok, err := filepath.Match(pattern, alias)
+	return err == nil && ok
+}
+
+func TestRealSSHGPreservesLocalHosts(t *testing.T) {
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Skip("ssh nicht im PATH")
+	}
+	dir := t.TempDir()
+	local, err := keygen.Generate(keygen.TypeEd25519, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := keygen.Generate(keygen.TypeEd25519, "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaLocal, err := keygen.Generate(keygen.TypeRSA, "rsa-local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaServer, err := keygen.Generate(keygen.TypeRSA, "rsa-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := filepath.Join(dir, "id_ed25519")
+	if err := os.WriteFile(primary, local.PrivatePEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rsaPEM := filepath.Join(dir, "id_rsa.pem")
+	if err := os.WriteFile(rsaPEM, rsaLocal.PrivatePEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "id_rsa"), rsaLocal.PrivatePEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	existing := strings.Join([]string{
+		"Host workstation",
+		"  HostName 192.0.2.20",
+		"  User me",
+		"  IdentityFile " + filepath.ToSlash(primary),
+		"",
+		"Host github.com",
+		"  HostName github.com",
+		"  User git",
+		"  IdentityFile " + filepath.ToSlash(primary),
+		"",
+		"Host bastion",
+		"  HostName 192.0.2.30",
+		"  User root",
+		"  IdentityFile " + filepath.ToSlash(rsaPEM),
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "config"), []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := map[string]string{}
+	for _, h := range []string{"workstation", "github.com", "bastion"} {
+		before[h] = realSSHG(t, dir, h)
+	}
+	idEd := "id-ed"
+	idRSA := "id-rsa"
+	bundle := &store.SyncBundle{
+		Identities: []store.Identity{
+			{ID: idEd, Name: "id_ed25519"},
+			{ID: idRSA, Name: "id_rsa"},
+		},
+		Hosts: []store.Host{
+			{ID: "h1", Alias: "workstation", HostName: "192.0.2.20", User: "me", IdentityID: &idEd},
+			{ID: "h2", Alias: "github.com", HostName: "github.com", User: "git", IdentityID: &idEd},
+			{ID: "h3", Alias: "bastion", HostName: "192.0.2.30", User: "root", IdentityID: &idRSA},
+		},
+	}
+	if _, err := Apply(dir, bundle, map[string][]byte{
+		idEd:  server.PrivatePEM,
+		idRSA: rsaServer.PrivatePEM,
+	}, ApplyOptions{AllowFirstWrite: true}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotStr := string(got)
+	if !strings.HasPrefix(gotStr, existing) {
+		t.Fatal("lokale Config muss bytegleich vor dem Block bleiben")
+	}
+	if strings.Index(gotStr, managedBegin) < len(existing) {
+		t.Fatal("managed Block muss nach den lokalen Eintraegen stehen")
+	}
+	for _, h := range []string{"workstation", "github.com", "bastion"} {
+		after := realSSHG(t, dir, h)
+		if sshGField(before[h], "hostname") != sshGField(after, "hostname") ||
+			sshGField(before[h], "user") != sshGField(after, "user") ||
+			sshGField(before[h], "port") != sshGField(after, "port") {
+			t.Fatalf("%s: hostname/user/port geaendert", h)
+		}
+		bif := sshGFields(before[h], "identityfile")
+		aif := sshGFields(after, "identityfile")
+		if len(bif) == 0 || len(aif) == 0 || bif[0] != aif[0] {
+			t.Fatalf("%s: erste identityfile %v -> %v", h, bif, aif)
+		}
+		for i, p := range aif {
+			if strings.HasSuffix(p, keyConflictSuffix) {
+				base := strings.TrimSuffix(p, keyConflictSuffix)
+				found := false
+				for j := 0; j < i; j++ {
+					if aif[j] == base {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("%s: Ausweichdatei vor lokaler Datei: %v", h, aif)
+				}
+			}
+		}
+	}
+}
+
+func realSSHG(t *testing.T, sshDir, host string) string {
+	t.Helper()
+	cmd := exec.Command("ssh", "-F", filepath.Join(sshDir, "config"), "-G", host)
+	cmd.Env = append(os.Environ(), "HOME="+filepath.Dir(sshDir))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ssh -G %s: %v\n%s", host, err, out)
+	}
+	return string(out)
+}
+
+func sshGField(g, key string) string {
+	for _, line := range strings.Split(g, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && strings.EqualFold(fields[0], key) {
+			return strings.Join(fields[1:], " ")
+		}
+	}
+	return ""
+}
+
+func sshGFields(g, key string) []string {
+	var out []string
+	for _, line := range strings.Split(g, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && strings.EqualFold(fields[0], key) {
+			out = append(out, strings.Join(fields[1:], " "))
+		}
+	}
+	return out
 }

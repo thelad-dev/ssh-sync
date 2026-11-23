@@ -337,9 +337,11 @@ func renderConfigBlock(bundle *store.SyncBundle, identityFiles map[string]string
 		}
 		if h.IdentityID != nil {
 			if p, ok := identityFiles[*h.IdentityID]; ok {
-				b.WriteString("  IdentityFile ")
-				b.WriteString(filepath.ToSlash(p))
-				b.WriteString("\n")
+				for _, path := range identityFileOrder(p) {
+					b.WriteString("  IdentityFile ")
+					b.WriteString(filepath.ToSlash(path))
+					b.WriteString("\n")
+				}
 			}
 		}
 		if h.IdentitiesOnly {
@@ -375,8 +377,26 @@ func orderedHosts(bundle *store.SyncBundle) []store.Host {
 	return hosts
 }
 
-// spliceManagedBlock ersetzt den managed Block oder fuegt ihn am Anfang ein.
-// Lokale Eintraege ausserhalb der Marker bleiben erhalten.
+// identityFileOrder stellt sicher, dass eine Ausweichdatei (*.ssh-sync) nie vor
+// der lokal vorhandenen Datei gleichen Namens steht. OpenSSH sammelt IdentityFile
+// ueber alle passenden Bloecke; die lokale Datei muss zuerst kommen.
+func identityFileOrder(path string) []string {
+	if !strings.HasSuffix(path, keyConflictSuffix) {
+		return []string{path}
+	}
+	primary := strings.TrimSuffix(path, keyConflictSuffix)
+	if primary == "" {
+		return []string{path}
+	}
+	if _, err := os.Stat(primary); err != nil {
+		return []string{path}
+	}
+	return []string{primary, path}
+}
+
+// spliceManagedBlock ersetzt den managed Block oder fuegt ihn am Ende ein.
+// Lokale Eintraege ausserhalb der Marker bleiben erhalten; ein schon vorhandener
+// Block bleibt an seiner Stelle und wird dort ersetzt.
 func spliceManagedBlock(existing, managedBlock string) string {
 	beginIdx := strings.Index(existing, managedBegin)
 	endIdx := strings.Index(existing, managedEnd)
@@ -394,11 +414,11 @@ func spliceManagedBlock(existing, managedBlock string) string {
 	if strings.TrimSpace(existing) == "" {
 		return managedBlock
 	}
-	// Erster Einfuegevorgang: Block oben, lokale Hosts darunter bleiben.
+	// Erster Einfuegevorgang: Block ans Ende, lokale Hosts behalten Vorrang.
 	if !strings.HasSuffix(existing, "\n") {
 		existing += "\n"
 	}
-	return managedBlock + "\n" + existing
+	return existing + "\n" + managedBlock
 }
 
 func writeTimestampedConfigBackup(configPath, content string) (string, error) {
