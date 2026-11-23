@@ -118,13 +118,24 @@ func runAutoSync(api *client.API, cfg *agentconfig.Config) {
 	if err != nil {
 		return // unlock noch nicht — still überspringen
 	}
-	result, err := agentsync.Pull(cfg, master)
+	// Daemon schreibt den ersten Abgleich nie destruktiv (kein managed Block).
+	result, err := agentsync.Pull(cfg, master, agentsync.PullOptions{})
 	if err != nil {
 		log.Printf("auto-sync fehlgeschlagen: %v", err)
 		return
 	}
+	if result.NeedsConfirm {
+		log.Printf("auto-sync: erster Abgleich braucht 'ssh-sync pull --apply' (noch kein managed Block)")
+		for _, w := range result.Warnings {
+			log.Printf("auto-sync warnung: %s", w)
+		}
+		return
+	}
+	for _, w := range result.Warnings {
+		log.Printf("auto-sync warnung: %s", w)
+	}
 	if result.ConfigBackup != "" {
-		log.Printf("auto-sync: %d Hosts, %d Keys — alte config → %s", result.Hosts, result.Keys, result.ConfigBackup)
+		log.Printf("auto-sync: %d Hosts, %d Keys - config-sicherung -> %s", result.Hosts, result.Keys, result.ConfigBackup)
 	} else {
 		log.Printf("auto-sync: %d Hosts, %d Keys", result.Hosts, result.Keys)
 	}
@@ -138,16 +149,25 @@ func runSyncCommand(api *client.API, cfg *agentconfig.Config, cmdID string) {
 		return
 	}
 
-	result, err := agentsync.Pull(cfg, master)
+	result, err := agentsync.Pull(cfg, master, agentsync.PullOptions{})
 	if err != nil {
 		_ = api.CompleteCommand(cmdID, store.StatusFailed, err.Error())
 		log.Printf("sync fehlgeschlagen: %v", err)
+		return
+	}
+	if result.NeedsConfirm {
+		msg := "erster Abgleich braucht ssh-sync pull --apply"
+		_ = api.CompleteCommand(cmdID, store.StatusFailed, msg)
+		log.Printf("sync abgelehnt: %s", msg)
 		return
 	}
 
 	msg := fmt.Sprintf("%d Hosts, %d Keys", result.Hosts, result.Keys)
 	if result.ConfigBackup != "" {
 		msg += "; backup " + result.ConfigBackup
+	}
+	if len(result.Warnings) > 0 {
+		msg += "; " + strings.Join(result.Warnings, "; ")
 	}
 	_ = api.CompleteCommand(cmdID, store.StatusComplete, msg)
 	log.Printf("sync abgeschlossen: %s", msg)
