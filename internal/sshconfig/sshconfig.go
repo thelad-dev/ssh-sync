@@ -33,13 +33,14 @@ type ApplyOptions struct {
 }
 
 type WriteResult struct {
-	ConfigPath   string
-	KeyPaths     []string
-	BackupPath   string // letzte zeitgestempelte Sicherung, falls geschrieben
-	Warnings     []string
-	Plans        []string // geplante bzw. ausgefuehrte Aktionen
-	DryRun       bool
-	NeedsConfirm bool // true: erster Lauf ohne AllowFirstWrite, nichts geschrieben
+	ConfigPath        string
+	KeyPaths          []string
+	BackupPath        string // letzte zeitgestempelte Sicherung, falls geschrieben
+	Warnings          []string
+	Plans             []string // geplante bzw. ausgefuehrte Aktionen
+	SkippedIdentities []string // z.B. "id_ed25519-git (Passphrase)"
+	DryRun            bool
+	NeedsConfirm      bool // true: erster Lauf ohne AllowFirstWrite, nichts geschrieben
 }
 
 // HasManagedBlock meldet, ob ~/.ssh/config schon den verwalteten Block enthaelt.
@@ -75,6 +76,7 @@ func Apply(sshDir string, bundle *store.SyncBundle, decryptedKeys map[string][]b
 
 	identityFiles := map[string]string{}
 	var keyPaths []string
+	var skipped []string
 
 	for _, id := range bundle.Identities {
 		plain, ok := decryptedKeys[id.ID]
@@ -88,6 +90,13 @@ func Apply(sshDir string, bundle *store.SyncBundle, decryptedKeys map[string][]b
 		}
 		result.Warnings = append(result.Warnings, decision.Warnings...)
 		result.Plans = append(result.Plans, decision.Plan)
+		if decision.Skipped {
+			label := id.Name
+			if decision.SkipReason != "" {
+				label = id.Name + " (" + decision.SkipReason + ")"
+			}
+			skipped = append(skipped, label)
+		}
 		if decision.Path == "" {
 			continue
 		}
@@ -100,6 +109,16 @@ func Apply(sshDir string, bundle *store.SyncBundle, decryptedKeys map[string][]b
 		keyPaths = append(keyPaths, decision.Path)
 	}
 	result.KeyPaths = keyPaths
+	result.SkippedIdentities = skipped
+	if n := len(skipped); n > 0 {
+		word := "Identity"
+		if n != 1 {
+			word = "Identities"
+		}
+		result.Warnings = append(result.Warnings, fmt.Sprintf(
+			"%d %s uebersprungen: %s", n, word, strings.Join(skipped, ", "),
+		))
+	}
 
 	block := renderConfigBlock(bundle, identityFiles)
 	configPath := result.ConfigPath
@@ -138,17 +157,32 @@ func Apply(sshDir string, bundle *store.SyncBundle, decryptedKeys map[string][]b
 }
 
 type keyDecision struct {
-	Path     string
-	Write    bool
-	Plan     string
-	Warnings []string
+	Path       string
+	Write      bool
+	Plan       string
+	Warnings   []string
+	Skipped    bool
+	SkipReason string // z.B. "Passphrase", "unlesbar"
 }
 
 func planPrivateKey(sshDir, basename string, serverPEM []byte) (*keyDecision, error) {
-	serverFP, err := PrivateKeyFingerprint(serverPEM)
+	serverFP, protected, err := inspectPrivateKey(serverPEM)
 	if err != nil {
-		return nil, err
+		reason := "unlesbar"
+		if protected {
+			reason = "Passphrase"
+		}
+		return &keyDecision{
+			Plan:       fmt.Sprintf("key %s: uebersprungen (%s)", basename, reason),
+			Warnings:   []string{fmt.Sprintf("WARNUNG: Identity %s uebersprungen (%s): %v", basename, reason, err)},
+			Skipped:    true,
+			SkipReason: reason,
+		}, nil
 	}
+	if protected {
+		return planPassphraseProtectedKey(sshDir, basename, serverFP)
+	}
+
 	primary := filepath.Join(sshDir, basename)
 	alternate := primary + keyConflictSuffix
 
@@ -205,6 +239,49 @@ func planPrivateKey(sshDir, basename string, serverPEM []byte) (*keyDecision, er
 	dec.Plan = fmt.Sprintf("key %s: uebersprungen (Kollision an %s und %s)", basename, basename, filepath.Base(alternate))
 	dec.Path = ""
 	dec.Write = false
+	dec.Skipped = true
+	dec.SkipReason = "Kollision"
+	return dec, nil
+}
+
+// planPassphraseProtectedKey schreibt die Server-PEM nie; lokaler Key bleibt unberuehrt.
+// Bei gleichem Fingerabdruck bleibt IdentityFile auf der lokalen Datei.
+func planPassphraseProtectedKey(sshDir, basename, serverFP string) (*keyDecision, error) {
+	primary := filepath.Join(sshDir, basename)
+	dec := &keyDecision{SkipReason: "Passphrase"}
+
+	if _, err := os.Stat(primary); os.IsNotExist(err) {
+		dec.Skipped = true
+		dec.Plan = fmt.Sprintf("key %s: uebersprungen (Passphrase)", basename)
+		dec.Warnings = []string{fmt.Sprintf(
+			"WARNUNG: Identity %s passphrase-geschuetzt - nicht geschrieben (lokal fehlt)", basename,
+		)}
+		return dec, nil
+	} else if err != nil {
+		return nil, err
+	}
+
+	warnPubMismatch(primary, &dec.Warnings)
+
+	existingFP, err := filePrivateKeyFingerprint(primary)
+	if err == nil && existingFP == serverFP {
+		dec.Path = primary
+		dec.Write = false
+		dec.SkipReason = ""
+		dec.Plan = fmt.Sprintf(
+			"key %s: unveraendert (Passphrase-Server-Key, gleicher Fingerabdruck %s)", basename, serverFP,
+		)
+		return dec, nil
+	}
+
+	dec.Skipped = true
+	dec.Path = ""
+	dec.Write = false
+	dec.Plan = fmt.Sprintf("key %s: uebersprungen (Passphrase)", basename)
+	dec.Warnings = append(dec.Warnings, fmt.Sprintf(
+		"WARNUNG: Identity %s passphrase-geschuetzt - lokal unberuehrt (%s), nicht geschrieben",
+		basename, fpOrErr(existingFP, err),
+	))
 	return dec, nil
 }
 

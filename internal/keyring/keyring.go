@@ -41,7 +41,7 @@ func GetMasterPassword() (string, error) {
 		return pw, nil
 	}
 	if preferFileStorage() {
-		return "", fmt.Errorf("master-passwort nicht gespeichert — zuerst: ssh-sync unlock")
+		return "", fmt.Errorf("master-passwort nicht gespeichert - zuerst: ssh-sync unlock")
 	}
 	user := currentUser()
 	if pw, err := keyringGet(user); err == nil && pw != "" {
@@ -51,7 +51,27 @@ func GetMasterPassword() (string, error) {
 		_ = keyringSet(user, pw)
 		return pw, nil
 	}
-	return "", fmt.Errorf("master-passwort nicht gespeichert — zuerst: ssh-sync unlock")
+	return "", fmt.Errorf("master-passwort nicht gespeichert - zuerst: ssh-sync unlock")
+}
+
+// ResolveMasterPassword nutzt zuerst den gespeicherten Wert (Keyring / .master-key / Env).
+// Fehlt er und isTerminal ist true, wird prompt aufgerufen. Sonst klare Fehlermeldung.
+// prompt darf das Passwort weder loggen noch ausgeben.
+func ResolveMasterPassword(isTerminal bool, prompt func(label string) (string, error)) (string, error) {
+	if pw, err := GetMasterPassword(); err == nil && pw != "" {
+		return pw, nil
+	}
+	if isTerminal && prompt != nil {
+		pw, err := prompt("Master-Passwort:")
+		if err != nil {
+			return "", fmt.Errorf("Passwort lesen fehlgeschlagen: %w", err)
+		}
+		if strings.TrimSpace(pw) == "" {
+			return "", fmt.Errorf("master-passwort nicht gespeichert - zuerst: ssh-sync unlock")
+		}
+		return pw, nil
+	}
+	return "", fmt.Errorf("master-passwort nicht gespeichert - zuerst: ssh-sync unlock")
 }
 
 const legacyService = "ssh-profile-syncer"

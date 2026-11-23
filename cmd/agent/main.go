@@ -14,6 +14,7 @@ import (
 	"github.com/thelad-dev/ssh-sync/internal/agentconfig"
 	"github.com/thelad-dev/ssh-sync/internal/agentsync"
 	"github.com/thelad-dev/ssh-sync/internal/client"
+	"github.com/thelad-dev/ssh-sync/internal/keyring"
 	"github.com/thelad-dev/ssh-sync/internal/releaseverify"
 	"github.com/thelad-dev/ssh-sync/internal/sshconfig"
 	"github.com/thelad-dev/ssh-sync/internal/version"
@@ -163,7 +164,11 @@ func runPull(cfgPath string, args []string) {
 		os.Exit(1)
 	}
 
-	master := promptPassword("Master-Passwort:")
+	master, err := keyring.ResolveMasterPassword(term.IsTerminal(int(syscall.Stdin)), promptPasswordErr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
 	opts := agentsync.PullOptions{
 		DryRun:          *dryRun,
 		AllowFirstWrite: *apply,
@@ -273,14 +278,22 @@ func promptConfirm(label string) bool {
 }
 
 func promptPassword(label string) string {
-	fmt.Fprint(os.Stderr, label+" ")
-	b, err := term.ReadPassword(int(syscall.Stdin))
-	fmt.Fprintln(os.Stderr)
+	pw, err := promptPasswordErr(label)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Passwort lesen fehlgeschlagen: %v\n", err)
 		os.Exit(1)
 	}
-	return string(b)
+	return pw
+}
+
+func promptPasswordErr(label string) (string, error) {
+	fmt.Fprint(os.Stderr, label+" ")
+	b, err := term.ReadPassword(int(syscall.Stdin))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func promptLine(label string) string {
