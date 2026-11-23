@@ -77,6 +77,12 @@ func TestLinuxInstallScriptContainsSigstoreContract(t *testing.T) {
 		defaultReleaseBase,
 		"ssh-sync-darwin-arm64",
 		"Nicht: curl | sh",
+		"Vertrauensmodell",
+		"COSIGN_PIN_VERSION=",
+		cosignPinnedVersion,
+		cosignPin("linux-amd64"),
+		"cosign-Bootstrap: SHA-256 stimmt nicht",
+		"github.com/sigstore/cosign/releases/download",
 	}
 	mustNot := []string{
 		"BEGIN PUBLIC KEY",
@@ -93,6 +99,45 @@ func TestLinuxInstallScriptContainsSigstoreContract(t *testing.T) {
 		if strings.Contains(script, bad) {
 			t.Fatalf("unerwuenscht %q", bad)
 		}
+	}
+}
+
+func TestCosignBootstrapPinsFormat(t *testing.T) {
+	if !strings.HasPrefix(cosignPinnedVersion, "v") {
+		t.Fatalf("Version muss mit v beginnen: %q", cosignPinnedVersion)
+	}
+	rest := strings.TrimPrefix(cosignPinnedVersion, "v")
+	parts := strings.Split(rest, ".")
+	if len(parts) != 3 {
+		t.Fatalf("Version erwartet vMAJOR.MINOR.PATCH, got %q", cosignPinnedVersion)
+	}
+	for _, p := range parts {
+		if p == "" {
+			t.Fatalf("leeres Versionssegment in %q", cosignPinnedVersion)
+		}
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				t.Fatalf("Versionssegment nicht numerisch in %q", cosignPinnedVersion)
+			}
+		}
+	}
+	required := []string{"linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"}
+	for _, key := range required {
+		h, ok := cosignBootstrapSHA256[key]
+		if !ok {
+			t.Fatalf("fehlender Pin-Schluessel %q", key)
+		}
+		if len(h) != 64 {
+			t.Fatalf("%s: Hash-Laenge %d, erwartet 64", key, len(h))
+		}
+		for _, c := range h {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				t.Fatalf("%s: Hash nicht klein-hex: %q", key, h)
+			}
+		}
+	}
+	if len(cosignBootstrapSHA256) != len(required) {
+		t.Fatalf("unerwartete Extra-Pins: %#v", cosignBootstrapSHA256)
 	}
 }
 
@@ -209,15 +254,16 @@ exit 0
 		"SSH_SYNC_ALLOW_INSECURE=1",
 	)
 
-	// Ohne cosign und ohne Schalter: Abbruch.
+	// Ohne cosign und ohne Schalter: Bootstrap scheitert (kein Asset), klarer Abbruch.
 	cmd := exec.Command("sh", scriptPath)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Fatalf("erwartet Abbruch ohne cosign, got ok\n%s", out)
+		t.Fatalf("erwartet Abbruch ohne cosign/Bootstrap, got ok\n%s", out)
 	}
-	if !strings.Contains(string(out), "cosign fehlt") {
-		t.Fatalf("erwartet cosign-Hinweis, got:\n%s", out)
+	gotOut := string(out)
+	if !strings.Contains(gotOut, "cosign-Bootstrap") && !strings.Contains(gotOut, "Download fehlgeschlagen") {
+		t.Fatalf("erwartet Bootstrap-/Offline-Hinweis, got:\n%s", gotOut)
 	}
 
 	ran := 0
@@ -278,10 +324,14 @@ func TestWindowsInstallScriptHandlerSemantics(t *testing.T) {
 		"manifest.json",
 		"manifest.json.sigstore.json",
 		"UnsicherNurPruefsumme",
-		"cosign verify-blob",
+		"verify-blob",
+		"CosignPinVersion",
+		"Vertrauensmodell",
 		"CF-Access-Client-Id",
 		base,
 		defaultReleaseBase,
+		cosignPinnedVersion,
+		cosignPin("windows-amd64"),
 	}
 	mustNot := []string{"BEGIN PUBLIC KEY", "manifest.sig", "openssl pkeyutl"}
 	for _, want := range mustContain {
@@ -590,4 +640,159 @@ func TestLinuxInstallScriptCosignRequiresManifestDigest(t *testing.T) {
 	if !strings.Contains(string(out), "fehlt im signierten Manifest") {
 		t.Fatalf("erwartet Manifest-Fehler, got:\n%s", out)
 	}
+}
+
+func installScriptFakeEnv(t *testing.T, payload []byte, withCosign bool, pinHash string) (scriptPath, installDir, binDir, assetDir string, env []string) {
+	t.Helper()
+	sum := sha256.Sum256(payload)
+	hashHex := hex.EncodeToString(sum[:])
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	binDir = filepath.Join(root, "bin")
+	installDir = filepath.Join(home, ".local", "bin")
+	assetDir = filepath.Join(root, "assets")
+	for _, d := range []string{binDir, assetDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := `{"assets":{"ssh-sync-linux-amd64":"` + hashHex + `"},"version":"1.0.0"}`
+	for name, body := range map[string]string{
+		"manifest.json":               manifest,
+		"manifest.json.sigstore.json": `{"dummy":"bundle"}`,
+		"SHA256SUMS":                  hashHex + "  ssh-sync-linux-amd64\n",
+		"ssh-sync-linux-amd64":        string(payload),
+	} {
+		if err := os.WriteFile(filepath.Join(assetDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	curlScript := `#!/bin/sh
+dest=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) dest="$2"; shift 2 ;;
+    -H|--header|-fsSL|-f|-s|-S|-L) shift ;;
+    http*|https*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+[ -n "$dest" ] && [ -n "$url" ] || exit 1
+src="` + assetDir + `/$(basename "$url")"
+[ -f "$src" ] || exit 1
+cp "$src" "$dest"
+`
+	if err := os.WriteFile(filepath.Join(binDir, "curl"), []byte(curlScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "systemctl"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if withCosign {
+		if err := os.WriteFile(filepath.Join(binDir, "cosign"), []byte("#!/bin/sh\necho PATH_COSIGN_USED >&2\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pins := map[string]string{
+		"linux-amd64":   pinHash,
+		"linux-arm64":   strings.Repeat("1", 64),
+		"darwin-amd64":  strings.Repeat("2", 64),
+		"darwin-arm64":  strings.Repeat("3", 64),
+		"windows-amd64": strings.Repeat("4", 64),
+	}
+	script := linuxInstallScript("http://127.0.0.1:9", "v0.0.0-test", pins)
+	scriptPath = filepath.Join(root, "install.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pathEnv := binDir + ":/usr/bin:/bin"
+	if p := os.Getenv("PATH"); p != "" {
+		pathEnv = binDir + ":" + p
+	}
+	env = append(os.Environ(),
+		"PATH="+pathEnv,
+		"HOME="+home,
+		"INSTALL_DIR="+installDir,
+		"SSH_SYNC_RELEASE_URL=http://127.0.0.1:9/rel",
+		"SSH_SYNC_ALLOW_INSECURE=1",
+	)
+	return scriptPath, installDir, binDir, assetDir, env
+}
+
+func TestLinuxInstallScriptBootstrapWrongHash(t *testing.T) {
+	payload := bytesFilled(2048, 'W')
+	fakeCosign := []byte("#!/bin/sh\nexit 0\n")
+	wrongPin := strings.Repeat("a", 64)
+	scriptPath, installDir, _, assetDir, env := installScriptFakeEnv(t, payload, false, wrongPin)
+	if err := os.WriteFile(filepath.Join(assetDir, "cosign-linux-amd64"), fakeCosign, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", scriptPath)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("erwartet Abbruch bei falschem cosign-Hash, got ok\n%s", out)
+	}
+	if !strings.Contains(string(out), "cosign-Bootstrap: SHA-256 stimmt nicht") {
+		t.Fatalf("erwartet Hash-Abbruch, got:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(installDir, "ssh-sync")); err == nil {
+		t.Fatal("binary darf bei Bootstrap-Hash-Mismatch nicht installiert werden")
+	}
+}
+
+func TestLinuxInstallScriptBootstrapSuccess(t *testing.T) {
+	payload := bytesFilled(2048, 'S')
+	fakeCosign := []byte("#!/bin/sh\necho BOOTSTRAP_COSIGN_USED >&2\nexit 0\n")
+	sum := sha256.Sum256(fakeCosign)
+	pin := hex.EncodeToString(sum[:])
+	scriptPath, installDir, _, assetDir, env := installScriptFakeEnv(t, payload, false, pin)
+	if err := os.WriteFile(filepath.Join(assetDir, "cosign-linux-amd64"), fakeCosign, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", scriptPath)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("erwartet Erfolg mit Bootstrap-cosign: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "BOOTSTRAP_COSIGN_USED") {
+		t.Fatalf("erwartet Bootstrap-cosign, got:\n%s", out)
+	}
+	if !strings.Contains(string(out), "lade gepinnte") {
+		t.Fatalf("erwartet Bootstrap-Hinweis, got:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(installDir, "ssh-sync")); err != nil {
+		t.Fatalf("binary fehlt: %v", err)
+	}
+}
+
+func TestLinuxInstallScriptPrefersPathCosign(t *testing.T) {
+	payload := bytesFilled(2048, 'P')
+	// Pin passt zu keinem Asset; PATH-cosign muss greifen ohne Bootstrap-Download.
+	scriptPath, installDir, _, _, env := installScriptFakeEnv(t, payload, true, strings.Repeat("f", 64))
+	cmd := exec.Command("sh", scriptPath)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("erwartet Erfolg mit PATH-cosign: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "PATH_COSIGN_USED") {
+		t.Fatalf("erwartet PATH-cosign, got:\n%s", got)
+	}
+	if strings.Contains(got, "lade gepinnte") {
+		t.Fatalf("Bootstrap darf bei PATH-cosign nicht laufen:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(installDir, "ssh-sync")); err != nil {
+		t.Fatalf("binary fehlt: %v", err)
+	}
+}
+
+func bytesFilled(n int, b byte) []byte {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = b
+	}
+	return out
 }

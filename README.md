@@ -20,7 +20,7 @@ docker compose up --build -d
 
 Portal (Compose bindet nur Loopback): `http://127.0.0.1:8080`. In Produktion nur hinter TLS bzw. Tunnel. Ausfuehrliche Bedienung: [docs/ANLEITUNG.md](docs/ANLEITUNG.md).
 
-Agent-Installer vom Portal laden, lesen, dann ausfuehren (kein `curl | sh`). Voraussetzung: [cosign](https://docs.sigstore.dev/cosign/system_config/installation/).
+Agent-Installer vom Portal laden, lesen, dann ausfuehren (kein `curl | sh`). Fehlt [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) im PATH, beschafft der Installer eine gepinnte Version selbst (siehe [docs/release-signing.md](docs/release-signing.md)).
 
 ```bash
 curl -fsSL "https://portal.example/install/linux.sh" -o install-linux.sh

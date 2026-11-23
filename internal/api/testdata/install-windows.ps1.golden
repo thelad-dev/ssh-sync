@@ -5,6 +5,17 @@
 #   powershell -File install-windows.ps1
 # Optional ohne cosign (KEINE Herkunftspruefung):
 #   powershell -File install-windows.ps1 -UnsicherNurPruefsumme
+#
+# Vertrauensmodell:
+#   1. Dieses Skript kommt per TLS vom Portal-Server.
+#   2. Fehlt cosign im PATH, laedt der Installer eine gepinnte cosign-Version
+#      (github.com/sigstore/cosign) in ein privates Temp-Verzeichnis und prueft
+#      die SHA-256 aus diesem Skript VOR der Ausfuehrung; danach Loeschung.
+#   3. cosign prueft die Release-Artefakte gegen die Sigstore-Identitaet
+#      (GitHub Actions dieses Repos). Vorhandenes cosign im PATH hat Vorrang.
+# Was das nicht schuetzt: ein manipuliertes Install-Skript (Kompromittierung
+# des Servers oder des TLS-Pfads zum Skript). Lies das Skript vor dem Ausfuehren.
+# Pins erneuern: docs/release-signing.md (Cosign-Bootstrap erneuern).
 param(
   [switch]$UnsicherNurPruefsumme
 )
@@ -69,6 +80,8 @@ $AllowInsecure = $env:SSH_SYNC_ALLOW_INSECURE -eq "1"
 $CosignOidcIssuer = "https://token.actions.githubusercontent.com"
 $CosignIdentityRegexp = '^https://github\.com/thelad-dev/ssh-sync/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 $GithubRepo = "https://github.com/thelad-dev/ssh-sync"
+$CosignPinVersion = "v3.1.4"
+$CosignPinWindowsAmd64 = "cbe953787074611f1334cbf37dc1cf953995bb8c45398eb4fc7bb781d29c1f2a"
 
 function Assert-HttpsOrLoopback([string]$Url, [string]$Label) {
   if ($Url -match '^https://') { return }
@@ -137,16 +150,31 @@ function Get-HashFromSums([string]$AssetName, [string]$SumsPath) {
   return $null
 }
 
-$cosign = Get-Command cosign -ErrorAction SilentlyContinue
-if ($null -ne $cosign) {
-  Write-Host "-> Pruefe Sigstore-Bundle mit cosign (GitHub Actions Identitaet)"
-  & cosign verify-blob --bundle $Bundle --certificate-identity-regexp $CosignIdentityRegexp --certificate-oidc-issuer $CosignOidcIssuer $Manifest
-  if ($LASTEXITCODE -ne 0) { throw "Sigstore-Verifikation fehlgeschlagen" }
-  $want = Get-HashFromManifest $Asset $Manifest
-  if (-not $want) { throw "Hash fuer $Asset fehlt im signierten Manifest" }
-  $got = Get-FileSha256 $ZipPath
-  if ($got -ne $want) { throw "SHA-256 stimmt nicht (got $got want $want)" }
-} elseif ($UnsicherNurPruefsumme) {
+function Resolve-Cosign {
+  $existing = Get-Command cosign -ErrorAction SilentlyContinue
+  if ($null -ne $existing) {
+    Write-Host "-> Nutze cosign aus PATH"
+    return $existing.Source
+  }
+  $asset = "cosign-windows-amd64.exe"
+  $want = $CosignPinWindowsAmd64
+  $url = "https://github.com/sigstore/cosign/releases/download/$CosignPinVersion/$asset"
+  $dest = Join-Path $Work $asset
+  Write-Host "-> cosign fehlt im PATH; lade gepinnte $CosignPinVersion ($asset)"
+  try {
+    Invoke-WebRequest -Uri $url -OutFile $dest -Headers $Headers
+  } catch {
+    throw "cosign-Bootstrap: Download fehlgeschlagen (Netzwerk/Offline?): $url"
+  }
+  $got = Get-FileSha256 $dest
+  if ($got -ne $want) {
+    throw "cosign-Bootstrap: SHA-256 stimmt nicht (got $got want $want). Abbruch, Binary wird nicht ausgefuehrt."
+  }
+  return $dest
+}
+
+$pathCosign = Get-Command cosign -ErrorAction SilentlyContinue
+if ($UnsicherNurPruefsumme -and ($null -eq $pathCosign)) {
   Write-Host "WARNUNG: cosign fehlt. Nur SHA-256 gegen SHA256SUMS. Keine Herkunftspruefung." -ForegroundColor Yellow
   Write-Host "Repo-Referenz: $GithubRepo" -ForegroundColor Yellow
   $want = Get-HashFromSums $Asset $Sums
@@ -154,17 +182,23 @@ if ($null -ne $cosign) {
   $got = Get-FileSha256 $ZipPath
   if ($got -ne $want) { throw "SHA-256 stimmt nicht (got $got want $want)" }
 } else {
-  Write-Host ""
-  Write-Host "cosign fehlt. Herkunftspruefung (Sigstore) braucht cosign." -ForegroundColor Red
-  Write-Host "Installation (Beispiele):"
-  Write-Host "  winget install sigstore.cosign"
-  Write-Host "  oder: https://docs.sigstore.dev/cosign/system_config/installation/"
-  Write-Host ""
-  Write-Host "Manuelle Pruefung:"
-  Write-Host "  cosign verify-blob --bundle manifest.json.sigstore.json --certificate-identity-regexp '$CosignIdentityRegexp' --certificate-oidc-issuer $CosignOidcIssuer manifest.json"
-  Write-Host ""
-  Write-Host "Ohne cosign nur mit: powershell -File install-windows.ps1 -UnsicherNurPruefsumme"
-  throw "cosign erforderlich (oder -UnsicherNurPruefsumme)"
+  try {
+    $cosignBin = Resolve-Cosign
+  } catch {
+    Write-Host ""
+    Write-Host "cosign-Bootstrap fehlgeschlagen. Herkunftspruefung braucht cosign." -ForegroundColor Red
+    Write-Host "Manuell: winget install sigstore.cosign"
+    Write-Host "  oder: https://docs.sigstore.dev/cosign/system_config/installation/"
+    Write-Host "Ohne Netzwerk nur mit: powershell -File install-windows.ps1 -UnsicherNurPruefsumme"
+    throw
+  }
+  Write-Host "-> Pruefe Sigstore-Bundle mit cosign (GitHub Actions Identitaet)"
+  & $cosignBin verify-blob --bundle $Bundle --certificate-identity-regexp $CosignIdentityRegexp --certificate-oidc-issuer $CosignOidcIssuer $Manifest
+  if ($LASTEXITCODE -ne 0) { throw "Sigstore-Verifikation fehlgeschlagen" }
+  $want = Get-HashFromManifest $Asset $Manifest
+  if (-not $want) { throw "Hash fuer $Asset fehlt im signierten Manifest" }
+  $got = Get-FileSha256 $ZipPath
+  if ($got -ne $want) { throw "SHA-256 stimmt nicht (got $got want $want)" }
 }
 
 Expand-Archive -Path $ZipPath -DestinationPath $InstallDir -Force

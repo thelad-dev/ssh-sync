@@ -57,7 +57,7 @@ Bereits vorhandene Namen/Aliase werden übersprungen.
 
 Im Portal: Tab **Geräte** → **Installation (Linux / Windows)** (Skript speichern und lesen, kein `curl | sh`). Binaries und Signatur kommen vom **GitHub-Release** (`manifest.json`, `manifest.json.sigstore.json`, `SHA256SUMS`).
 
-Voraussetzung fuer die Herkunftspruefung: [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) im PATH.
+Herkunftspruefung: der Installer nutzt `cosign` aus dem PATH oder laedt bei Bedarf eine gepinnte cosign-Version (SHA-256 vor Ausfuehrung, privates Temp, danach geloescht). Details: [release-signing.md](release-signing.md#installer-vertrauensmodell-cosign-bootstrap).
 
 ### Installation Linux / macOS
 
@@ -69,7 +69,7 @@ curl -fsSL "https://<portal-url>/install/linux.sh" -o install-linux.sh
 sh install-linux.sh
 ```
 
-Das Skript laedt vom GitHub-Release, prueft mit `cosign verify-blob` und vergleicht die Binary-SHA-256 mit dem signierten Manifest.
+Das Skript laedt vom GitHub-Release, prueft mit `cosign verify-blob` (PATH oder Bootstrap) und vergleicht die Binary-SHA-256 mit dem signierten Manifest.
 
 Manuelle Pruefung:
 
@@ -107,8 +107,8 @@ Anleitung für Windows 11 Pro/Home (64-bit). Der empfohlene Weg ist das Portal-I
 
 - Windows 11 **22H2 oder neuer**, 64-bit
 - **PowerShell 5.1** (vorinstalliert) oder **Windows Terminal** mit PowerShell 5.1 / **PowerShell 7**
-- **cosign** im PATH (Sigstore-Herkunftspruefung; sonst nur `-UnsicherNurPruefsumme`)
-- Netzwerk zum Portal (LAN/VPN oder `https://<portal-url>` mit Cloudflare Access) und zu GitHub Releases
+- Netzwerk zum Portal (LAN/VPN oder `https://<portal-url>` mit Cloudflare Access) und zu GitHub Releases (Release-Artefakte und ggf. cosign-Bootstrap)
+- Optional: **cosign** im PATH; sonst laedt der Installer eine gepinnte Version (sonst nur `-UnsicherNurPruefsumme`)
 
 **PowerShell öffnen**
 
@@ -159,7 +159,7 @@ $headers = @{
 Das Skript (Quelle: `/install/windows.ps1` auf dem Portal):
 
 1. lädt `manifest.json`, `manifest.json.sigstore.json`, `SHA256SUMS` und `ssh-sync-windows-amd64.zip` vom GitHub-Release (Basis: `$env:SSH_SYNC_RELEASE_URL` oder `…/releases/latest/download`; Portal-URL nur fuer Hinweise, `$env:SSH_SYNC_URL`)
-2. prueft mit `cosign verify-blob` (oder bei `-UnsicherNurPruefsumme` nur SHA-256 gegen `SHA256SUMS`)
+2. prueft mit `cosign verify-blob` (PATH oder Bootstrap; oder bei `-UnsicherNurPruefsumme` nur SHA-256 gegen `SHA256SUMS`)
 3. entpackt nach **`%LOCALAPPDATA%\Programs\ssh-sync\ssh-sync.exe`**
 4. hängt diesen Ordner an den **Benutzer-PATH** an
 5. entfernt die **Legacy-Geplanten-Aufgabe** `ssh-sync` (falls noch vorhanden)

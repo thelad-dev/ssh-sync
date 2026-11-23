@@ -29,6 +29,30 @@ cosign verify-blob \
 
 Danach SHA-256 der Assets gegen die Hashes in `manifest.json` (bzw. `SHA256SUMS`) pruefen. Installer tun dasselbe mit `cosign verify-blob`; der Agent (`ssh-sync update`) nutzt die eingebettete Verifikation in `internal/releaseverify`.
 
+## Installer-Vertrauensmodell (Cosign-Bootstrap)
+
+1. Das Install-Skript kommt per TLS vom Portal-Server.
+2. Fehlt `cosign` im PATH, laedt der Installer eine in `internal/api/cosign_bootstrap.go` gepinnte Version von [sigstore/cosign](https://github.com/sigstore/cosign/releases) in ein privates Temp-Verzeichnis, prueft die SHA-256 aus dem Skript **vor** der Ausfuehrung und loescht die Binary danach. Vorhandenes `cosign` im PATH hat Vorrang und wird nicht ueberschrieben.
+3. Dieses cosign prueft die Release-Artefakte gegen die Sigstore-Identitaet (GitHub Actions dieses Repos).
+
+Was das **nicht** schuetzt: ein manipuliertes Install-Skript (Kompromittierung des Servers oder des TLS-Pfads zum Skript). Deshalb: Skript speichern, lesen, dann ausfuehren - kein `curl | sh`. Der Schalter `--unsicher-nur-pruefsumme` / `-UnsicherNurPruefsumme` bleibt der einzige Weg ohne Herkunftspruefung und wird nie stillschweigend gewaehlt.
+
+### Cosign-Bootstrap erneuern
+
+1. Neues Release auf https://github.com/sigstore/cosign/releases waehlen (z. B. `vX.Y.Z`).
+2. Fuer jedes Asset die SHA-256 der Binary berechnen:
+
+```bash
+VER=vX.Y.Z
+for a in cosign-linux-amd64 cosign-linux-arm64 cosign-darwin-amd64 cosign-darwin-arm64 cosign-windows-amd64.exe; do
+  curl -fsSL "https://github.com/sigstore/cosign/releases/download/${VER}/${a}" | sha256sum
+done
+```
+
+3. In `internal/api/cosign_bootstrap.go` `cosignPinnedVersion` und die Eintraege in `cosignBootstrapSHA256` setzen (Schluessel `windows-amd64` fuer die `.exe`).
+4. `go test ./internal/api/ -run 'CosignBootstrap|InstallScript' -count=1` (Format-Test und Golden mit `UPDATE_GOLDEN=1` aktualisieren).
+5. Kurz in diesem Abschnitt die Version nennen, falls die Doku eine Beispielversion fuehrt.
+
 ## Vertrauensanker und Rekor
 
 - Der Client bindet die oeffentliche Sigstore Trusted Root (`trusted_root.json` in `internal/releaseverify`) ein und prueft das Bundle dagegen.
