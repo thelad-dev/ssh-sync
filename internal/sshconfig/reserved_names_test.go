@@ -19,7 +19,7 @@ func TestApplyRejectsReservedIdentityNames(t *testing.T) {
 		Identities: []store.Identity{{ID: "id1", Name: "authorized_keys"}},
 		Hosts:      []store.Host{{ID: "h1", Alias: "h", HostName: "x", IdentityID: &idRef}},
 	}
-	_, err := Apply(sshDir, bundle, map[string][]byte{"id1": []byte("PRIVATE")})
+	_, err := Apply(sshDir, bundle, map[string][]byte{"id1": []byte("PRIVATE")}, ApplyOptions{AllowFirstWrite: true})
 	if err == nil {
 		t.Fatal("expected reserved name rejection")
 	}

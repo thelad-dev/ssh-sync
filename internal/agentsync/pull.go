@@ -10,15 +10,24 @@ import (
 	"github.com/thelad-dev/ssh-sync/internal/sshconfig"
 )
 
+type PullOptions struct {
+	DryRun          bool
+	AllowFirstWrite bool
+}
+
 type PullResult struct {
 	Hosts        int
 	Keys         int
 	Config       string
 	ConfigBackup string
 	KeyPaths     []string
+	Warnings     []string
+	Plans        []string
+	DryRun       bool
+	NeedsConfirm bool
 }
 
-func Pull(cfg *agentconfig.Config, master string) (*PullResult, error) {
+func Pull(cfg *agentconfig.Config, master string, opts PullOptions) (*PullResult, error) {
 	if err := releaseverify.CheckServerURL(cfg.ServerURL, false); err != nil {
 		return nil, err
 	}
@@ -47,7 +56,10 @@ func Pull(cfg *agentconfig.Config, master string) (*PullResult, error) {
 	}
 
 	sshDir := cfg.ResolveSSHDir()
-	applied, err := sshconfig.Apply(sshDir, bundle, decrypted)
+	applied, err := sshconfig.Apply(sshDir, bundle, decrypted, sshconfig.ApplyOptions{
+		DryRun:          opts.DryRun,
+		AllowFirstWrite: opts.AllowFirstWrite,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -58,5 +70,9 @@ func Pull(cfg *agentconfig.Config, master string) (*PullResult, error) {
 		Config:       applied.ConfigPath,
 		ConfigBackup: applied.BackupPath,
 		KeyPaths:     applied.KeyPaths,
+		Warnings:     applied.Warnings,
+		Plans:        applied.Plans,
+		DryRun:       applied.DryRun,
+		NeedsConfirm: applied.NeedsConfirm,
 	}, nil
 }

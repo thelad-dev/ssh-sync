@@ -15,6 +15,7 @@ import (
 	"github.com/thelad-dev/ssh-sync/internal/agentsync"
 	"github.com/thelad-dev/ssh-sync/internal/client"
 	"github.com/thelad-dev/ssh-sync/internal/releaseverify"
+	"github.com/thelad-dev/ssh-sync/internal/sshconfig"
 	"github.com/thelad-dev/ssh-sync/internal/version"
 )
 
@@ -77,7 +78,7 @@ Befehle:
   daemon                       Hintergrund-Agent (Vordergrund, Strg+C)
   service install|repair|start|stop   Windows-Dienst (Hintergrund)
   keygen  --name NAME [--type ed25519|rsa] [--upload] [--local-dir PATH]
-  pull    [--config PATH]
+  pull    [--config PATH] [--dry-run] [--apply]
   status
   update  [--server URL] [--no-restart]
   purge   [--managed-only] [--yes]   Gerät abgeben (löscht ~/.ssh, Config, Binary)
@@ -86,6 +87,7 @@ Befehle:
 Beispiel:
   ssh-sync init --server https://ssh.example.com --name laptop-linux
   ssh-sync unlock
+  ssh-sync pull --apply
   ssh-sync daemon
 `)
 }
@@ -150,6 +152,8 @@ func runInit(cfgPath string, args []string) {
 func runPull(cfgPath string, args []string) {
 	fs := flag.NewFlagSet("pull", flag.ExitOnError)
 	configPath := fs.String("config", cfgPath, "Agent-Config-Pfad")
+	dryRun := fs.Bool("dry-run", false, "nur anzeigen, nichts schreiben")
+	apply := fs.Bool("apply", false, "ersten Abgleich wirklich schreiben (ohne managed Block)")
 	_ = fs.Parse(args)
 
 	cfg, err := agentconfig.Load(*configPath)
@@ -160,21 +164,39 @@ func runPull(cfgPath string, args []string) {
 	}
 
 	master := promptPassword("Master-Passwort:")
-	result, err := agentsync.Pull(cfg, master)
+	opts := agentsync.PullOptions{
+		DryRun:          *dryRun,
+		AllowFirstWrite: *apply,
+	}
+
+	// Erster Lauf ohne --apply: Trockenlauf, bei TTY Rueckfrage.
+	first := !sshconfigHasManaged(cfg)
+	if first && !*apply && !*dryRun {
+		opts.DryRun = true
+	}
+
+	result, err := agentsync.Pull(cfg, master, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Sync fehlgeschlagen: %v\n", err)
 		os.Exit(1)
 	}
+	printPullResult(cfg.DeviceID, result)
 
-	fmt.Printf("Sync abgeschlossen für Gerät %s\n", cfg.DeviceID)
-	fmt.Printf("  Hosts:    %d\n", result.Hosts)
-	fmt.Printf("  Keys:     %d\n", result.Keys)
-	fmt.Printf("  Config:   %s\n", result.Config)
-	if result.ConfigBackup != "" {
-		fmt.Printf("  Backup:   %s (alte config, einmalig)\n", result.ConfigBackup)
-	}
-	for _, p := range result.KeyPaths {
-		fmt.Printf("  Key:      %s\n", p)
+	if result.NeedsConfirm && !*apply {
+		if !*dryRun && term.IsTerminal(int(syscall.Stdin)) {
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Noch kein verwalteter Config-Block vorhanden.")
+			if promptConfirm("Jetzt schreiben? [y/N]: ") {
+				result, err = agentsync.Pull(cfg, master, agentsync.PullOptions{AllowFirstWrite: true})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Sync fehlgeschlagen: %v\n", err)
+					os.Exit(1)
+				}
+				printPullResult(cfg.DeviceID, result)
+				return
+			}
+		}
+		fmt.Fprintln(os.Stderr, "Kein Schreibvorgang. Erneut mit: ssh-sync pull --apply")
 	}
 }
 
@@ -210,6 +232,44 @@ func runStatus(cfgPath string) {
 		os.Exit(1)
 	}
 	fmt.Printf("Remote:   %d Hosts, %d Keys\n", len(bundle.Hosts), len(bundle.Identities))
+}
+
+func sshconfigHasManaged(cfg *agentconfig.Config) bool {
+	return sshconfig.HasManagedBlock(cfg.ResolveSSHDir())
+}
+
+func printPullResult(deviceID string, result *agentsync.PullResult) {
+	title := "Sync abgeschlossen"
+	if result.DryRun {
+		title = "Trockenlauf (nichts geschrieben)"
+	}
+	fmt.Printf("%s für Gerät %s\n", title, deviceID)
+	fmt.Printf("  Hosts:    %d\n", result.Hosts)
+	fmt.Printf("  Keys:     %d\n", result.Keys)
+	fmt.Printf("  Config:   %s\n", result.Config)
+	if result.ConfigBackup != "" {
+		fmt.Printf("  Backup:   %s\n", result.ConfigBackup)
+	}
+	for _, p := range result.KeyPaths {
+		fmt.Printf("  Key:      %s\n", p)
+	}
+	for _, line := range result.Plans {
+		fmt.Printf("  Plan:     %s\n", line)
+	}
+	for _, w := range result.Warnings {
+		fmt.Fprintf(os.Stderr, "  Warnung:  %s\n", w)
+	}
+}
+
+func promptConfirm(label string) bool {
+	fmt.Fprint(os.Stderr, label)
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return false
+	}
+	s := strings.TrimSpace(strings.ToLower(line))
+	return s == "y" || s == "yes" || s == "j" || s == "ja"
 }
 
 func promptPassword(label string) string {
