@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ssh-sync</title>
-  <link rel="stylesheet" href="style.css?v=opensshpad1">
+  <link rel="stylesheet" href="style.css?v=pubderive1">
 </head>
 <body>
   <div class="shell">
@@ -251,6 +251,17 @@
         </div>
       </form>
     </dialog>
+
+    <dialog id="pub-key-dialog">
+      <h2>Public Key</h2>
+      <p class="muted">Aus dem gespeicherten Private Key abgeleitet — fuer <code>authorized_keys</code>.</p>
+      <textarea id="pub-key-text" class="setup-copy mono" rows="3" readonly></textarea>
+      <p id="pub-key-error" class="error hidden"></p>
+      <div class="dialog-actions">
+        <button type="button" id="btn-copy-pub-dialog" class="secondary">Kopieren</button>
+        <button type="button" id="btn-close-pub-dialog">Schließen</button>
+      </div>
+    </dialog>
   </div>
 
   <script type="importmap">
@@ -263,6 +274,6 @@
     }
   }
   </script>
-  <script type="module" src="app.js?v=opensshpad1"></script>
+  <script type="module" src="app.js?v=pubderive1"></script>
 </body>
 </html>

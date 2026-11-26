@@ -30,6 +30,7 @@ jobs:
       - name: Portal smoke tests
         run: |
           node web/keygen_test.mjs
+          node web/openssh_pub_test.mjs
           node web/login_form_test.mjs
           node web/auth_no_password_test.mjs
           node web/open_account_archive_test.mjs
