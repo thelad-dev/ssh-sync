@@ -83,3 +83,74 @@ export function marshalAuthorizedEd25519(pub) {
   const b64 = btoa(String.fromCharCode(...wire));
   return `ssh-ed25519 ${b64}`;
 }
+
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function bytesToB64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+function openSSHReader(bytes) {
+  let i = 0;
+  return {
+    u32() {
+      if (i + 4 > bytes.length) throw new Error('OpenSSH: truncated');
+      const v = ((bytes[i] << 24) | (bytes[i + 1] << 16) | (bytes[i + 2] << 8) | bytes[i + 3]) >>> 0;
+      i += 4;
+      return v;
+    },
+    str() {
+      const n = this.u32();
+      if (i + n > bytes.length) throw new Error('OpenSSH: truncated string');
+      const s = bytes.subarray(i, i + n);
+      i += n;
+      return s;
+    },
+  };
+}
+
+/**
+ * Liest die authorized_keys-Zeile aus dem Klartext-Public-Blob eines OpenSSH-Private-PEM.
+ * Keine Entschluesselung noetig (auch bei cipher != none liegt der Public Key im Klartext).
+ * @param {string} pemText
+ * @returns {string} z.B. "ssh-ed25519 AAAA..." oder "" wenn kein OpenSSH-PEM
+ */
+export function publicLineFromOpenSSHPrivate(pemText) {
+  const text = String(pemText || '');
+  if (!/BEGIN OPENSSH PRIVATE KEY/.test(text)) return '';
+  const b64 = text
+    .split(/\r?\n/)
+    .filter((l) => l && !l.startsWith('-----'))
+    .join('');
+  const raw = b64ToBytes(b64);
+  const magic = new TextEncoder().encode('openssh-key-v1\0');
+  for (let i = 0; i < magic.length; i++) {
+    if (raw[i] !== magic[i]) throw new Error('OpenSSH: ungueltige Magic');
+  }
+  const r = openSSHReader(raw.subarray(magic.length));
+  r.str(); // ciphername
+  r.str(); // kdfname
+  r.str(); // kdf options
+  const nkeys = r.u32();
+  if (nkeys < 1) return '';
+  const pubWire = r.str();
+  const type = new TextDecoder().decode(openSSHReader(pubWire).str());
+  if (!type) return '';
+  return `${type} ${bytesToB64(pubWire)}`;
+}
+
+/** Ableitung fuer Import/Pub: OpenSSH-PEM → authorized_keys-Zeile, sonst leer. */
+export function derivePublicKeyFromPrivate(pemText) {
+  try {
+    return publicLineFromOpenSSHPrivate(pemText).trim();
+  } catch {
+    return '';
+  }
+}

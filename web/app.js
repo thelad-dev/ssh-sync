@@ -1,5 +1,5 @@
-import { bindAuthForms } from './auth-forms.js?v=opensshpad1';
-import { api, getToken, setToken, clearToken, setMasterPassword, getMasterPassword } from './api.js?v=opensshpad1';
+import { bindAuthForms } from './auth-forms.js?v=pubderive1';
+import { api, getToken, setToken, clearToken, setMasterPassword, getMasterPassword } from './api.js?v=pubderive1';
 import {
   deriveKeys,
   encryptIdentity,
@@ -10,7 +10,7 @@ import {
   bytesToHex,
   newSalt,
   randomId,
-} from './crypto.js?v=opensshpad1';
+} from './crypto.js?v=pubderive1';
 import {
   parseSSHConfig,
   identityNameFromFile,
@@ -20,11 +20,12 @@ import {
   matchPublicKey,
   matchIdentityForKeyFile,
   publicKeysEqual,
-} from './import.js?v=opensshpad1';
-import { renderSSHConfigPreview, sortedHosts as sortedHostsList } from './config-preview.js?v=opensshpad1';
-import { generateEd25519Keypair, normalizeKeyName } from './keygen.js?v=opensshpad1';
-import { initCollapsibleSections, updateCollapsibleDefault } from './collapsible.js?v=opensshpad1';
-import { openAccountArchive } from './account-archive.js?v=opensshpad1';
+} from './import.js?v=pubderive1';
+import { renderSSHConfigPreview, sortedHosts as sortedHostsList } from './config-preview.js?v=pubderive1';
+import { generateEd25519Keypair, normalizeKeyName } from './keygen.js?v=pubderive1';
+import { derivePublicKeyFromPrivate } from './openssh.js?v=pubderive1';
+import { initCollapsibleSections, updateCollapsibleDefault } from './collapsible.js?v=pubderive1';
+import { openAccountArchive } from './account-archive.js?v=pubderive1';
 
 let kdfSalt = null;
 /** @type {{ authKey: Uint8Array, encKey: Uint8Array, legacyKey: Uint8Array } | null} */
@@ -80,6 +81,10 @@ async function init() {
   document.getElementById('btn-keygen').addEventListener('click', openKeygenDialog);
   document.getElementById('keygen-form').addEventListener('submit', onKeygenSubmit);
   document.getElementById('btn-copy-keygen-public').addEventListener('click', () => copyTextarea('keygen-public'));
+  document.getElementById('btn-copy-pub-dialog').addEventListener('click', () => copyTextarea('pub-key-text'));
+  document.getElementById('btn-close-pub-dialog').addEventListener('click', () => {
+    document.getElementById('pub-key-dialog').close();
+  });
   document.getElementById('host-form').addEventListener('submit', onHostFormSubmit);
 
   const status = await api.setupStatus();
@@ -272,7 +277,7 @@ function renderIdentities() {
       <strong>${esc(i.name)}</strong>
       <span class="muted">${esc(i.comment || '')}</span>
       <span class="btn-group-inline">
-        ${i.public_key ? `<button type="button" data-copy-pub="${esc(i.id)}" class="secondary" title="Public Key">Pub</button>` : ''}
+        <button type="button" data-copy-pub="${esc(i.id)}" class="secondary" title="Public Key">Pub</button>
         <button data-del-identity="${esc(i.id)}" class="danger">×</button>
       </span>
     </div>`,
@@ -280,9 +285,7 @@ function renderIdentities() {
     .join('');
   el.querySelectorAll('[data-copy-pub]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const id = btn.dataset.copyPub;
-      const item = identities.find((x) => x.id === id);
-      if (item?.public_key) copyText(item.public_key);
+      void onPubClick(btn.dataset.copyPub);
     });
   });
   el.querySelectorAll('[data-del-identity]').forEach((btn) => {
@@ -934,6 +937,58 @@ async function copyText(text) {
   }
 }
 
+function showPubKeyDialog(text, errMsg) {
+  const dlg = document.getElementById('pub-key-dialog');
+  const ta = document.getElementById('pub-key-text');
+  const err = document.getElementById('pub-key-error');
+  ta.value = text || '';
+  if (errMsg) {
+    err.textContent = errMsg;
+    err.classList.remove('hidden');
+  } else {
+    err.textContent = '';
+    err.classList.add('hidden');
+  }
+  dlg.showModal();
+  if (text) {
+    ta.focus();
+    ta.select();
+  }
+}
+
+async function onPubClick(id) {
+  const item = identities.find((x) => x.id === id);
+  if (!item) return;
+  try {
+    let pub = String(item.public_key || '').trim();
+    if (!pub) {
+      if (!item.encrypted_private_key) {
+        throw new Error('Kein Private Key vorhanden — Public Key kann nicht abgeleitet werden.');
+      }
+      const keys = await ensureCryptoKeys();
+      const plain = await decryptIdentity(keys, item.id, item.public_key, item.encrypted_private_key);
+      const pem = typeof plain === 'string' ? plain : new TextDecoder().decode(plain);
+      pub = derivePublicKeyFromPrivate(pem);
+      if (!pub) {
+        throw new Error('Public Key konnte nicht aus dem Private Key abgeleitet werden (kein OpenSSH-PEM?).');
+      }
+      // AAD enthaelt public_key — neu verschluesseln, sonst bricht spaeteres Decrypt.
+      const enc = await encryptIdentity(keys.encKey, item.id, pub, plain);
+      await api.putIdentity(item.id, {
+        name: item.name,
+        public_key: pub,
+        encrypted_private_key: enc,
+        comment: item.comment || '',
+      });
+      await refreshAll();
+    }
+    await copyText(pub);
+    showPubKeyDialog(pub);
+  } catch (err) {
+    showPubKeyDialog('', err.message || String(err));
+  }
+}
+
 function analyzeImportPlan(importedHosts, keys) {
   const serverByAlias = Object.fromEntries(hosts.map((h) => [h.alias, h]));
   const serverByName = Object.fromEntries(identities.map((i) => [i.name, i]));
@@ -1018,11 +1073,14 @@ async function collectImportData() {
 
   const keys = [];
   for (const { file, text, base } of privateEntries) {
+    const privateKey = text.trim() + '\n';
+    let publicKey = matchPublicKey(base, pubMap);
+    if (!publicKey) publicKey = derivePublicKeyFromPrivate(privateKey);
     keys.push({
       name: identityNameFromFile(base),
-      privateKey: text.trim() + '\n',
+      privateKey,
       fileName: file.name,
-      publicKey: matchPublicKey(base, pubMap),
+      publicKey,
     });
   }
 
@@ -1063,10 +1121,18 @@ async function onImportSubmit(e) {
       const existing = identities.find((i) => i.name === k.name);
       if (existing) {
         if (!existing.public_key && k.publicKey) {
+          // AAD enthaelt public_key — Ciphertext mit neuem Public Key neu binden.
+          const plain = await decryptIdentity(
+            keysLocal,
+            existing.id,
+            existing.public_key,
+            existing.encrypted_private_key,
+          );
+          const enc = await encryptIdentity(keysLocal.encKey, existing.id, k.publicKey, plain);
           await api.putIdentity(existing.id, {
             name: existing.name,
             public_key: k.publicKey,
-            encrypted_private_key: existing.encrypted_private_key,
+            encrypted_private_key: enc,
             comment: existing.comment || '',
           });
           importedKeys++;
